@@ -155,11 +155,11 @@ func buildEncodedQuery(o *queryOpts, allowOrder bool) (string, error) {
 		}
 	}
 	if o.since != "" {
-		minutes, err := parseSince(o.since)
+		clause, err := sinceClause(o.since)
 		if err != nil {
 			return "", err
 		}
-		parts = append(parts, fmt.Sprintf("sys_created_on>=javascript:gs.minutesAgoStart(%d)", minutes))
+		parts = append(parts, clause)
 	}
 	if allowOrder && o.orderBy != "" {
 		if rest, ok := strings.CutPrefix(o.orderBy, "-"); ok {
@@ -169,6 +169,16 @@ func buildEncodedQuery(o *queryOpts, allowOrder bool) (string, error) {
 		}
 	}
 	return strings.Join(parts, "^"), nil
+}
+
+// sinceClause compiles a --since value into the encoded time clause shared
+// by every read command (query/count/agg/grep).
+func sinceClause(s string) (string, error) {
+	minutes, err := parseSince(s)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("sys_created_on>=javascript:gs.minutesAgoStart(%d)", minutes), nil
 }
 
 // parseSince converts 15m/2h/3d into whole minutes for

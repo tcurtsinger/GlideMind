@@ -19,6 +19,7 @@ import (
 const (
 	sysIDa = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	sysIDb = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	sysIDc = "cccccccccccccccccccccccccccccccc"
 )
 
 // fakeInstance serves schema metadata, incident rows, stats, and script
@@ -97,6 +98,9 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 	}
 	mux.HandleFunc("/api/now/table/sys_script", func(w http.ResponseWriter, r *http.Request) {
 		bump("grep")
+		if strings.Contains(r.URL.Query().Get("sysparm_query"), "sys_created_on>=javascript:gs.minutesAgoStart(120)") {
+			bump("grep-since-120")
+		}
 		writeResult(w, []map[string]any{scriptRec(sysIDa, "Incident autoclose",
 			"// closes stale incidents\nvar repo = new C1Repository('incident');\nrepo.closeStale();")})
 	})
@@ -115,6 +119,18 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 	mux.HandleFunc("/api/now/table/sys_ui_action", func(w http.ResponseWriter, r *http.Request) {
 		bump("grep")
 		writeResult(w, []map[string]any{})
+	})
+	// No name column (like the real table) — grep must fall back to
+	// short_description. Only the script_true LIKE query matches, mirroring
+	// the server-side filter.
+	mux.HandleFunc("/api/now/table/sys_ui_policy", func(w http.ResponseWriter, r *http.Request) {
+		bump("grep")
+		if !strings.HasPrefix(r.URL.Query().Get("sysparm_query"), "script_trueLIKE") {
+			writeResult(w, []map[string]any{})
+			return
+		}
+		writeResult(w, []map[string]any{{"sys_id": sysIDc, "short_description": "Hide VIP fields",
+			"script_true": "g_form.setDisplay('vip', false);\nvar repo = new C1Repository('incident');"}})
 	})
 	mux.HandleFunc("/api/now/table/incident/", func(w http.ResponseWriter, r *http.Request) {
 		bump("get")
@@ -366,8 +382,25 @@ func TestGrepTextOutput(t *testing.T) {
 	if !strings.Contains(stdout, "sys_script_include:C1Repository: +2 more matches (glm get sys_script_include "+sysIDb+" --fields script --full)") {
 		t.Errorf("cap marker missing:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "6 matching lines in 2 records - searched sys_script, sys_script_include, sys_script_client, sys_ui_action") {
+	// sys_ui_policy has no name column — short_description stands in.
+	if !strings.Contains(stdout, "sys_ui_policy:Hide VIP fields:2: var repo = new C1Repository('incident');") {
+		t.Errorf("ui policy match missing:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "7 matching lines in 3 records - searched sys_script, sys_script_include, sys_script_client, sys_ui_action, sys_ui_policy") {
 		t.Errorf("summary wrong: %q", stderr)
+	}
+}
+
+func TestGrepSince(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	runGlm(t, srv, "", "grep", "C1Repository", "--since", "2h")
+	if hits["grep-since-120"] != 1 {
+		t.Errorf("--since 2h must add the minutesAgoStart(120) clause to the table queries")
+	}
+	if _, _, err := runGlmErr(t, srv, "", "grep", "x", "--since", "soon"); err == nil || !strings.Contains(err.Error(), "invalid --since") {
+		t.Errorf("bad --since should be rejected, got: %v", err)
 	}
 }
 
@@ -377,14 +410,14 @@ func TestGrepJSONL(t *testing.T) {
 
 	stdout, _ := runGlm(t, srv, "", "grep", "C1Repository", "--json")
 	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	if len(lines) != 6 {
-		t.Fatalf("want 6 jsonl match lines, got %d:\n%s", len(lines), stdout)
+	if len(lines) != 7 {
+		t.Fatalf("want 7 jsonl match lines, got %d:\n%s", len(lines), stdout)
 	}
 	var obj map[string]any
 	if err := json.Unmarshal([]byte(lines[0]), &obj); err != nil {
 		t.Fatalf("not jsonl: %v", err)
 	}
-	for _, key := range []string{"table", "sys_id", "name", "line", "text"} {
+	for _, key := range []string{"table", "field", "sys_id", "name", "line", "text"} {
 		if _, ok := obj[key]; !ok {
 			t.Errorf("jsonl match missing %q: %s", key, lines[0])
 		}
@@ -415,8 +448,8 @@ func TestGrepFormatJSONIsSingleDocument(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &objs); err != nil {
 		t.Fatalf("--format json must be one JSON document: %v\n%s", err, stdout)
 	}
-	if len(objs) != 6 {
-		t.Errorf("want 6 match objects, got %d", len(objs))
+	if len(objs) != 7 {
+		t.Errorf("want 7 match objects, got %d", len(objs))
 	}
 }
 
