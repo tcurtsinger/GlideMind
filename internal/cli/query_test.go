@@ -98,7 +98,7 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 	}
 	mux.HandleFunc("/api/now/table/sys_script", func(w http.ResponseWriter, r *http.Request) {
 		bump("grep")
-		if strings.Contains(r.URL.Query().Get("sysparm_query"), "sys_created_on>=javascript:gs.minutesAgoStart(120)") {
+		if strings.Contains(r.URL.Query().Get("sysparm_query"), "sys_updated_on>=javascript:gs.minutesAgoStart(120)") {
 			bump("grep-since-120")
 		}
 		writeResult(w, []map[string]any{scriptRec(sysIDa, "Incident autoclose",

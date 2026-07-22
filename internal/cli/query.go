@@ -142,7 +142,7 @@ func newQueryCmd() *cobra.Command {
 // addQueryFlags registers the filter flags shared with count.
 func addQueryFlags(cmd *cobra.Command, o *queryOpts) {
 	cmd.Flags().StringArrayVarP(&o.queries, "query", "q", nil, "encoded query clause; repeatable, joined with ^")
-	cmd.Flags().StringVar(&o.since, "since", "", "only records created in the last 15m|2h|3d")
+	cmd.Flags().StringVar(&o.since, "since", "", "only records created or updated in the last 15m|2h|3d")
 }
 
 // buildEncodedQuery joins -q clauses, --since, and --order-by into one
@@ -172,13 +172,15 @@ func buildEncodedQuery(o *queryOpts, allowOrder bool) (string, error) {
 }
 
 // sinceClause compiles a --since value into the encoded time clause shared
-// by every read command (query/count/agg/grep).
+// by every read command (query/count/agg/grep). sys_updated_on is stamped at
+// creation and only ever advances, so this one clause means "created or
+// updated since".
 func sinceClause(s string) (string, error) {
 	minutes, err := parseSince(s)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("sys_created_on>=javascript:gs.minutesAgoStart(%d)", minutes), nil
+	return fmt.Sprintf("sys_updated_on>=javascript:gs.minutesAgoStart(%d)", minutes), nil
 }
 
 // parseSince converts 15m/2h/3d into whole minutes for

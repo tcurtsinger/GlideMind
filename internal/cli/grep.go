@@ -244,7 +244,7 @@ func newGrepCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&tables, "tables", "", "table[:field] list to search (default: script tables)")
 	cmd.Flags().StringVar(&scope, "scope", "", "restrict to an application scope (sys_scope.scope)")
-	cmd.Flags().StringVar(&since, "since", "", "only records created in the last 15m|2h|3d")
+	cmd.Flags().StringVar(&since, "since", "", "only records created or updated in the last 15m|2h|3d")
 	cmd.Flags().IntVar(&limit, "limit", 20, "max records per table")
 	cmd.Flags().IntVar(&maxMatches, "max-matches", 5, "max matching lines shown per record")
 	return cmd
