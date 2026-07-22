@@ -121,19 +121,29 @@ func readBodyArg(cmd *cobra.Command, body string) ([]byte, error) {
 	return bytes.TrimPrefix(data, []byte("\ufeff")), nil
 }
 
-// renderAPIResponse formats an arbitrary REST response with the shared
-// output machinery: a result array of flat objects renders like query, a
-// flat result object renders like get's detail view. Anything the tabular
-// renderers cannot represent faithfully (nested objects, mixed arrays,
-// scalars) prints as JSON so no value is ever dropped.
+// renderAPIResponse formats an arbitrary REST response.
+//
+// Machine formats (json/jsonl) are a FAITHFUL passthrough: the response is
+// decoded with UseNumber and re-emitted, so scalar types, large-integer
+// precision, nulls, and nested structure all survive intact — glm api is
+// the raw escape hatch and must not mutate the server's data.
+//
+// Human formats (table/tsv/csv/ids) may flatten and truncate for reading:
+// a result array of flat objects renders like query, a flat result object
+// like get's detail view, and anything else falls back to complete JSON so
+// no value is silently dropped.
 func renderAPIResponse(cmd *cobra.Command, data []byte, full bool) error {
 	out := cmd.OutOrStdout()
 	if len(bytes.TrimSpace(data)) == 0 {
 		fmt.Fprintln(cmd.ErrOrStderr(), "(empty response)")
 		return nil
 	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	// UseNumber keeps 9007199254740993 exact instead of rounding through
+	// float64 — the whole point of a raw passthrough.
+	dec.UseNumber()
 	var doc any
-	if err := json.Unmarshal(data, &doc); err != nil {
+	if err := dec.Decode(&doc); err != nil {
 		// Non-JSON responses pass through verbatim.
 		_, werr := out.Write(data)
 		return werr
@@ -150,15 +160,19 @@ func renderAPIResponse(cmd *cobra.Command, data []byte, full bool) error {
 		return err
 	}
 
+	// Faithful machine passthrough — never routed through the string-
+	// coercing human renderers.
+	if format == "json" || format == "jsonl" {
+		return writeAPIJSON(out, doc, format)
+	}
+
 	switch v := doc.(type) {
 	case []any:
 		recs, ok := asRecords(v)
 		if !ok || !allFlat(recs) {
 			break
 		}
-		// Empty results still honor the selected machine format — ids and
-		// jsonl pipes get an empty stream, never a literal [].
-		if len(recs) == 0 && (format == "table" || format == "tsv" || format == "csv") {
+		if len(recs) == 0 {
 			fmt.Fprintln(cmd.ErrOrStderr(), "0 rows")
 			return nil
 		}
@@ -178,27 +192,36 @@ func renderAPIResponse(cmd *cobra.Command, data []byte, full bool) error {
 		return output.RecordDetail(out, v, nil, output.Options{Format: format, Full: full})
 	}
 
-	// Everything else passes through as JSON — complete, never flattened.
-	enc := json.NewEncoder(out)
+	// Nested/complex data in a human format: fall back to complete JSON so
+	// nothing is silently dropped.
+	return writeAPIJSON(out, doc, "json")
+}
+
+// writeAPIJSON emits doc losslessly. jsonl encodes one array element per
+// line; every other shape is a single document. json.Number, bool, and nil
+// round-trip exactly, so no scalar is coerced to a string.
+func writeAPIJSON(w io.Writer, doc any, format string) error {
+	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
-	// jsonl keeps its one-object-per-line contract even for nested arrays.
-	if arr, ok := doc.([]any); ok && format == "jsonl" {
-		for _, el := range arr {
-			if err := enc.Encode(el); err != nil {
-				return err
+	if format == "jsonl" {
+		if arr, ok := doc.([]any); ok {
+			for _, el := range arr {
+				if err := enc.Encode(el); err != nil {
+					return err
+				}
 			}
+			return nil
 		}
-		return nil
 	}
 	return enc.Encode(doc)
 }
 
-// flatValue reports whether output.Value renders v faithfully: scalars and
-// the Table API's {display_value, value} reference shape. Anything else
-// (nested objects, arrays) would be blanked or mangled.
+// flatValue reports whether output.Value renders v faithfully in a human
+// format: scalars and the Table API's {display_value, value} reference
+// shape. Anything else (nested objects, arrays) would be blanked or mangled.
 func flatValue(v any) bool {
 	switch m := v.(type) {
-	case nil, string, bool, float64:
+	case nil, string, bool, float64, json.Number:
 		return true
 	case map[string]any:
 		_, dv := m["display_value"]

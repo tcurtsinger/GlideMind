@@ -70,7 +70,14 @@ func TestNormalizeInstance(t *testing.T) {
 		{in: "https://acme.service-now.com/nav_to.do?uri=incident_list.do", want: "https://acme.service-now.com"},
 		{in: "acme.service-now.com/now/nav/ui/classic/params/target/incident.do", want: "https://acme.service-now.com"},
 		{in: "http://localhost:8080", want: "http://localhost:8080"},
+		{in: "http://127.0.0.1:8080", want: "http://127.0.0.1:8080"},
 		{in: "  ", wantErr: true},
+		// H-02: credentials embedded in the URL are refused, never stored.
+		{in: "https://user:pass@acme.service-now.com", wantErr: true},
+		{in: "https://user@acme.service-now.com", wantErr: true},
+		// H-01: plaintext http is refused off loopback; odd schemes too.
+		{in: "http://acme.service-now.com", wantErr: true},
+		{in: "ftp://acme.service-now.com", wantErr: true},
 	}
 	for _, c := range cases {
 		u, err := NormalizeInstance(c.in)
@@ -87,6 +94,43 @@ func TestNormalizeInstance(t *testing.T) {
 		if u.String() != c.want {
 			t.Errorf("NormalizeInstance(%q) = %q, want %q", c.in, u.String(), c.want)
 		}
+	}
+}
+
+func TestNonGetDoesNotFollowRedirects(t *testing.T) {
+	// H-01: a 307 on a write must not replay the body to /finish; the 3xx
+	// is surfaced to the caller as an error and hits the wire exactly once.
+	var finishHits int
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			http.Redirect(w, r, "/finish", http.StatusTemporaryRedirect)
+		case "/finish":
+			finishHits++
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	_, err := c.Raw(context.Background(), http.MethodPost, "/start", nil, []byte(`{"x":1}`))
+	if err == nil {
+		t.Fatal("a redirected write must surface the 3xx as an error, not follow it")
+	}
+	if finishHits != 0 {
+		t.Errorf("write body was replayed to the redirect target %d time(s)", finishHits)
+	}
+}
+
+func TestGetRefusesCrossOriginRedirect(t *testing.T) {
+	// H-01: a GET redirect off the configured origin is refused, keeping
+	// the Basic credential on the configured host.
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(other.Close)
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/leak", http.StatusFound)
+	}))
+	if _, err := c.Raw(context.Background(), http.MethodGet, "/api/read", nil, nil); err == nil {
+		t.Error("cross-origin GET redirect must be refused")
 	}
 }
 
