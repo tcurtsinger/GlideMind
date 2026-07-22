@@ -12,3 +12,4 @@ Essentials:
 - Data arrives on stdout; summaries, pagination hints, and warnings on stderr.
 - Truncated values end in a marker naming the exact follow-up command — never dead-end.
 - `--profile <name>` selects the instance; `glm whoami` sanity-checks auth.
+- On PowerShell, quote the stdin body marker: `--body '@-'` (bare `@-` is a PS parse error).

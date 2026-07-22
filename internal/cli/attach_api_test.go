@@ -244,6 +244,24 @@ func TestAPIRejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestWindowsBOMTolerance(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+	bom := string(rune(0xFEFF))
+
+	// PowerShell pipes between native executables prepend a UTF-8 BOM to
+	// the stream — the first stdin key must still resolve.
+	stdout, _ := runGlm(t, srv, bom+sysIDa+"\n", "get", "incident", "-")
+	if !strings.Contains(stdout, "INC0000001") {
+		t.Errorf("BOM-prefixed stdin key must resolve:\n%s", stdout)
+	}
+
+	// Same stream shape for a piped --body payload.
+	if _, _, err := runGlmErr(t, srv, bom+`{"short_description":"x"}`, "api", "POST", "/api/now/table/incident", "--body", "@-", "--yes"); err != nil {
+		t.Errorf("BOM-prefixed stdin body must validate as JSON: %v", err)
+	}
+}
+
 func TestPrimeListsEveryCommand(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)
