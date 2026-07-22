@@ -6,6 +6,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/tcurtsinger/GlideMind/internal/snow"
 )
 
 func TestStoreCachesToDisk(t *testing.T) {
@@ -88,6 +90,26 @@ func TestStoreRefreshBypassesCache(t *testing.T) {
 	}
 	if _, err := s.Get(context.Background(), "incident"); err != nil {
 		t.Fatalf("refresh get: %v", err)
+	}
+}
+
+func TestStoreCacheIsPerIdentity(t *testing.T) {
+	t.Setenv(EnvCacheDir, t.TempDir())
+	c := fakeInstance(t)
+	s1, _ := NewStore(c)
+	if _, err := s1.Get(context.Background(), "incident"); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	// Same host, different authenticated user: dictionary rows are
+	// ACL-filtered per identity, so the warm cache must not be shared.
+	c2, err := snow.NewBasic(c.BaseURL(), "someone.else", "pw", 5*time.Second)
+	if err != nil {
+		t.Fatalf("client2: %v", err)
+	}
+	s2, _ := NewStore(c2)
+	if s2.GetCached("incident") != nil {
+		t.Error("schema cache leaked across identities")
 	}
 }
 

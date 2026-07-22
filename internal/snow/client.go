@@ -91,6 +91,10 @@ func (c *Client) log(format string, args ...any) {
 // BaseURL is the normalized instance URL.
 func (c *Client) BaseURL() string { return c.base.String() }
 
+// Username is the authenticated identity — cache keys must include it, since
+// instance metadata (dictionary rows) is ACL-filtered per user.
+func (c *Client) Username() string { return c.username }
+
 // GetJSON performs a GET with bounded retries on 429/503 (honoring
 // Retry-After) and decodes the JSON response into out (which may be nil).
 func (c *Client) GetJSON(ctx context.Context, path string, query url.Values, out any) error {

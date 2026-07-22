@@ -30,7 +30,10 @@ type Store struct {
 }
 
 // NewStore builds a store whose cache lives under
-// <user-cache-dir>/glidemind/schema/<instance-host>/.
+// <user-cache-dir>/glidemind/schema/<instance-host>/<identity>/. The
+// identity segment matters: dictionary rows are ACL-filtered per user, so
+// metadata cached by one identity must never drive another identity's
+// validation or default fields.
 func NewStore(client *snow.Client) (*Store, error) {
 	base := os.Getenv(EnvCacheDir)
 	if base == "" {
@@ -44,9 +47,13 @@ func NewStore(client *snow.Client) (*Store, error) {
 	if u, err := url.Parse(client.BaseURL()); err == nil && u.Host != "" {
 		host = strings.ReplaceAll(u.Host, ":", "_")
 	}
+	identity := safeSegment(client.Username())
+	if identity == "" {
+		identity = "anonymous"
+	}
 	return &Store{
 		Client: client,
-		Dir:    filepath.Join(base, "glidemind", "schema", host),
+		Dir:    filepath.Join(base, "glidemind", "schema", host, identity),
 		TTL:    DefaultTTL,
 	}, nil
 }
@@ -114,13 +121,17 @@ func (s *Store) write(table string, meta *TableMeta) {
 }
 
 func (s *Store) path(table string) string {
-	safe := strings.Map(func(r rune) rune {
+	return filepath.Join(s.Dir, safeSegment(table)+".json")
+}
+
+// safeSegment reduces a value to filesystem-safe path-segment characters.
+func safeSegment(s string) string {
+	return strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
 			return r
 		default:
 			return '_'
 		}
-	}, table)
-	return filepath.Join(s.Dir, safe+".json")
+	}, s)
 }
