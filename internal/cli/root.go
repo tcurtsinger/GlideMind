@@ -56,6 +56,9 @@ func newRootCmd() *cobra.Command {
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Stray positional args (e.g. a typo'd subcommand) must fail with
+		// exit 1, not fall into cobra's help path with exit 0.
+		Args: cobra.NoArgs,
 	}
 
 	pf := cmd.PersistentFlags()
