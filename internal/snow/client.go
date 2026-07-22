@@ -176,6 +176,26 @@ func (c *Client) GetRecord(ctx context.Context, table, sysID string, query url.V
 	return out.Result, nil
 }
 
+// Aggregate runs a stats query. The API returns an array when grouped and a
+// single object when not; both normalize to a slice.
+func (c *Client) Aggregate(ctx context.Context, table string, query url.Values) ([]Record, error) {
+	var out struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if err := c.GetJSON(ctx, "/api/now/stats/"+url.PathEscape(table), query, &out); err != nil {
+		return nil, err
+	}
+	var rows []Record
+	if err := json.Unmarshal(out.Result, &rows); err == nil {
+		return rows, nil
+	}
+	var single Record
+	if err := json.Unmarshal(out.Result, &single); err == nil {
+		return []Record{single}, nil
+	}
+	return nil, fmt.Errorf("unexpected stats API response shape")
+}
+
 // Count returns the number of matching rows via the Aggregate API — the
 // cheapest possible answer to "how many".
 func (c *Client) Count(ctx context.Context, table, encodedQuery string) (int, error) {
