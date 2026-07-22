@@ -149,5 +149,11 @@ func Resolve(flagName string) (*Resolved, error) {
 	if !ok {
 		return nil, fmt.Errorf("profile %q not found (have: %v) — see `glm profile list`", name, f.Names())
 	}
+	// Credentials are env-overridable even for named profiles: the profile
+	// picks the instance, GLM_USERNAME/GLM_PASSWORD may supply who — the
+	// same rule the secret package applies to passwords.
+	if u := os.Getenv(EnvUsername); u != "" {
+		p.Username = u
+	}
 	return &Resolved{Name: name, Source: source, Profile: p}, nil
 }

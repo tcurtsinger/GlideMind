@@ -118,6 +118,25 @@ func TestResolveEnvInstanceProfile(t *testing.T) {
 	}
 }
 
+func TestResolveEnvUsernameOverridesNamedProfile(t *testing.T) {
+	pointConfigAt(t)
+	write(t, &File{
+		Default: "dev",
+		Profiles: map[string]Profile{
+			"dev": {Instance: "https://dev.service-now.com", Username: "file-user"},
+		},
+	})
+	t.Setenv(EnvUsername, "env-user")
+
+	r, err := Resolve("")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.Profile.Username != "env-user" {
+		t.Fatalf("username = %q, want env override", r.Profile.Username)
+	}
+}
+
 func TestResolveSingleProfileFallback(t *testing.T) {
 	pointConfigAt(t)
 	write(t, &File{
