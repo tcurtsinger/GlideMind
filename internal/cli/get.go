@@ -87,9 +87,15 @@ func newGetCmd() *cobra.Command {
 				return err
 			}
 
-			format, err := resolveFormat(cmd)
+			format, explicitFormat, err := resolveFormat(cmd)
 			if err != nil {
 				return err
+			}
+			// The key/value detail view is get's default shape on terminals
+			// AND in pipes; delimited single-record output happens only when
+			// csv/tsv is asked for explicitly.
+			if !explicitFormat {
+				format = "table"
 			}
 			// Exactly one requested field in a text format prints the bare
 			// value — the shape of "give me this script" for piping.

@@ -50,7 +50,7 @@ func newQueryCmd() *cobra.Command {
 			}
 			ctx := cmd.Context()
 
-			format, err := resolveFormat(cmd)
+			format, _, err := resolveFormat(cmd)
 			if err != nil {
 				return err
 			}
@@ -175,22 +175,24 @@ func parseSince(s string) (int, error) {
 }
 
 // resolveFormat picks the output format: --json wins, then --format, then
-// table on a terminal and TSV in a pipe (same content, no padding).
-func resolveFormat(cmd *cobra.Command) (string, error) {
+// table on a terminal and TSV in a pipe (same content, no padding). The
+// second return reports whether the caller asked explicitly — commands with
+// their own default shape (get's detail view) only honor explicit choices.
+func resolveFormat(cmd *cobra.Command) (string, bool, error) {
 	if jsonFlag, _ := cmd.Flags().GetBool("json"); jsonFlag {
-		return "jsonl", nil
+		return "jsonl", true, nil
 	}
 	f, _ := cmd.Flags().GetString("format")
 	if f == "" {
 		if term.IsTerminal(int(os.Stdout.Fd())) {
-			return "table", nil
+			return "table", false, nil
 		}
-		return "tsv", nil
+		return "tsv", false, nil
 	}
 	if !contains(output.Formats, f) {
-		return "", fmt.Errorf("unknown format %q (formats: %s)", f, strings.Join(output.Formats, "|"))
+		return "", false, fmt.Errorf("unknown format %q (formats: %s)", f, strings.Join(output.Formats, "|"))
 	}
-	return f, nil
+	return f, true, nil
 }
 
 // emitPageMeta writes the pagination summary to stderr: pipes stay clean,

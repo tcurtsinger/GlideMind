@@ -186,7 +186,8 @@ func writeJSON(w io.Writer, fields []string, recs []map[string]any, opts Options
 
 // RecordDetail renders a single record: non-empty fields only (empty-field
 // omission is a large share of the token win on wide tables), regular fields
-// before sys_* bookkeeping, values soft-capped unless --full.
+// before sys_* bookkeeping, values soft-capped unless --full. csv/tsv render
+// a parseable header + one row instead of the key/value view.
 func RecordDetail(w io.Writer, rec map[string]any, opts Options) error {
 	switch opts.Format {
 	case "ids":
@@ -202,10 +203,27 @@ func RecordDetail(w io.Writer, rec map[string]any, opts Options) error {
 		enc := json.NewEncoder(w)
 		enc.SetEscapeHTML(false)
 		return enc.Encode(obj)
+	case "csv", "tsv":
+		return Records(w, detailFields(rec), []map[string]any{rec}, opts)
 	}
 
-	var regular, system []string
+	fields := detailFields(rec)
 	width := 0
+	for _, k := range fields {
+		if n := utf8.RuneCountInString(k); n > width {
+			width = n
+		}
+	}
+	for _, k := range fields {
+		fmt.Fprintf(w, "%-*s  %s\n", width, k, TruncateField(Value(rec, k), opts.Full))
+	}
+	return nil
+}
+
+// detailFields orders a record's non-empty fields: regular first, then
+// sys_* bookkeeping, alphabetical within each group.
+func detailFields(rec map[string]any) []string {
+	var regular, system []string
 	for k := range rec {
 		if Value(rec, k) == "" {
 			continue
@@ -215,15 +233,8 @@ func RecordDetail(w io.Writer, rec map[string]any, opts Options) error {
 		} else {
 			regular = append(regular, k)
 		}
-		if n := utf8.RuneCountInString(k); n > width {
-			width = n
-		}
 	}
 	sort.Strings(regular)
 	sort.Strings(system)
-
-	for _, k := range append(regular, system...) {
-		fmt.Fprintf(w, "%-*s  %s\n", width, k, TruncateField(Value(rec, k), opts.Full))
-	}
-	return nil
+	return append(regular, system...)
 }

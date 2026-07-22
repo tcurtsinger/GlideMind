@@ -201,6 +201,25 @@ func TestGetSingleFieldPrintsBareValue(t *testing.T) {
 	}
 }
 
+func TestGetExplicitTSVIsDelimited(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	stdout, _ := runGlm(t, srv, "", "get", "incident", sysIDa, "--format", "tsv")
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("explicit tsv get should be header + one row, got:\n%s", stdout)
+	}
+	if !strings.Contains(lines[0], "\t") || !strings.Contains(lines[1], "\t") {
+		t.Errorf("expected tab-delimited output:\n%s", stdout)
+	}
+	// Default (no --format) stays the key/value detail view even when piped.
+	stdout, _ = runGlm(t, srv, "", "get", "incident", sysIDa)
+	if strings.Count(strings.TrimRight(stdout, "\n"), "\n") < 3 {
+		t.Errorf("default get should be the multi-line detail view:\n%s", stdout)
+	}
+}
+
 func TestGetStdinBatchEmitsJSONL(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)

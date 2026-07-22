@@ -119,6 +119,37 @@ func TestRecordDetailOmitsEmptyAndGroupsSysFields(t *testing.T) {
 	}
 }
 
+func TestRecordDetailDelimitedFormats(t *testing.T) {
+	rec := map[string]any{
+		"number":    "INC0000001",
+		"state":     "In Progress",
+		"empty_one": "",
+		"sys_id":    "abc",
+	}
+	var buf bytes.Buffer
+	if err := RecordDetail(&buf, rec, Options{Format: "tsv"}); err != nil {
+		t.Fatalf("detail tsv: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("tsv detail should be header + one row, got:\n%s", buf.String())
+	}
+	if lines[0] != "number\tstate\tsys_id" {
+		t.Errorf("tsv header = %q (non-empty only, regular before sys_*)", lines[0])
+	}
+	if lines[1] != "INC0000001\tIn Progress\tabc" {
+		t.Errorf("tsv row = %q", lines[1])
+	}
+
+	buf.Reset()
+	if err := RecordDetail(&buf, rec, Options{Format: "csv"}); err != nil {
+		t.Fatalf("detail csv: %v", err)
+	}
+	if !strings.HasPrefix(buf.String(), "number,state,sys_id\n") {
+		t.Errorf("csv detail header wrong:\n%s", buf.String())
+	}
+}
+
 func TestUnknownFormatErrors(t *testing.T) {
 	if err := Records(&bytes.Buffer{}, []string{"a"}, nil, Options{Format: "yaml"}); err == nil {
 		t.Fatal("unknown format should error")

@@ -49,6 +49,7 @@ func fakeInstance(t *testing.T) *snow.Client {
 			rows = []map[string]any{
 				{"name": "u_gadget", "element": "name", "internal_type": "string", "display": "false", "reference.name": ""},
 				{"name": "u_gadget", "element": "u_lifecycle_state", "internal_type": "integer", "display": "false", "reference.name": ""},
+				{"name": "u_gadget", "element": "owner", "internal_type": "reference", "display": "false", "reference.name": "sys_user"},
 				{"name": "u_gadget", "element": "active", "internal_type": "boolean", "display": "false", "reference.name": ""},
 				{"name": "u_gadget", "element": "sys_updated_on", "internal_type": "glide_date_time", "display": "false", "reference.name": ""},
 			}
@@ -102,9 +103,9 @@ func TestFetchCustomTableHeuristics(t *testing.T) {
 		t.Errorf("display = %q, want fallback to name", meta.DisplayField)
 	}
 	got := meta.DefaultFields()
-	want := []string{"name", "u_lifecycle_state", "sys_updated_on", "active"}
+	want := []string{"name", "u_lifecycle_state", "owner", "sys_updated_on", "active"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("default fields = %v, want %v (state-like detection + only present roles)", got, want)
+		t.Errorf("default fields = %v, want %v (state-like detection, owner fallback, only present roles)", got, want)
 	}
 }
 

@@ -154,7 +154,12 @@ func (m *TableMeta) DefaultFields() []string {
 		add(m.firstStateLike())
 	}
 	add("priority")
-	add("assigned_to")
+	// One owner-ish column: assigned_to when the table has it, else owner.
+	if _, ok := m.Fields["assigned_to"]; ok {
+		add("assigned_to")
+	} else {
+		add("owner")
+	}
 	add("sys_updated_on")
 	add("active")
 	return fields
