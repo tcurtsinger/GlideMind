@@ -63,6 +63,7 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 	mux.HandleFunc("/api/now/table/sys_dictionary", func(w http.ResponseWriter, r *http.Request) {
 		bump("schema")
 		writeResult(w, []map[string]any{
+			{"name": "task", "element": "sys_id", "internal_type": "GUID", "display": "false", "reference.name": ""},
 			{"name": "task", "element": "number", "internal_type": "string", "display": "true", "reference.name": ""},
 			{"name": "task", "element": "short_description", "internal_type": "string", "display": "false", "reference.name": "", "mandatory": "true"},
 			{"name": "task", "element": "assigned_to", "internal_type": "reference", "display": "false", "reference.name": "sys_user"},

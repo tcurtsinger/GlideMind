@@ -13,6 +13,13 @@ import (
 // live on other tables); sys_* names are always accepted (base bookkeeping
 // fields exist everywhere and dictionaries are sometimes ACL-filtered).
 func (m *TableMeta) Validate(names []string) error {
+	// An ACL-filtered dictionary (empty or partial) must not produce false
+	// unknown-field errors. A complete ServiceNow dictionary always carries
+	// the sys_id row; when it is missing, this metadata cannot be trusted
+	// for validation — skip and let the API judge the query.
+	if _, ok := m.Fields["sys_id"]; !ok {
+		return nil
+	}
 	for _, name := range names {
 		first, _, _ := strings.Cut(name, ".")
 		if first == "" || strings.HasPrefix(first, "sys_") {
