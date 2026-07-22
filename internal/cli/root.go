@@ -73,8 +73,11 @@ func newRootCmd() *cobra.Command {
 		newGrepCmd(),
 		newSchemaCmd(),
 		newTablesCmd(),
+		newAttachCmd(),
+		newAPICmd(),
 		newWhoamiCmd(),
 		newProfileCmd(),
+		newPrimeCmd(),
 	)
 	return cmd
 }

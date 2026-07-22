@@ -4,6 +4,7 @@
 package snow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -122,11 +123,7 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out
 			return nil, &NetworkError{Err: err}
 		}
 
-		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable
-		if retryable && attempt < maxAttempts {
-			io.Copy(io.Discard, resp.Body) //nolint:errcheck
-			resp.Body.Close()
-			wait := retryDelay(resp, attempt)
+		if wait, ok := retryAfter(resp, attempt); ok {
 			c.log("HTTP %d, retrying in %s", resp.StatusCode, wait)
 			select {
 			case <-time.After(wait):
@@ -136,6 +133,120 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out
 			}
 		}
 		return resp.Header, decodeResponse(resp, out)
+	}
+}
+
+// retryAfter reports whether the response is retryable (429/503) within the
+// attempt budget, draining the body and returning the wait when it is.
+func retryAfter(resp *http.Response, attempt int) (time.Duration, bool) {
+	retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable
+	if !retryable || attempt >= maxAttempts {
+		return 0, false
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+	return retryDelay(resp, attempt), true
+}
+
+// Raw performs an arbitrary REST request (glm api) with the same auth,
+// retries, and error mapping as reads, returning the raw response body —
+// possibly empty (HTTP 204).
+func (c *Client) Raw(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, error) {
+	u := *c.base
+	u.Path += path
+	u.RawQuery = query.Encode()
+
+	for attempt := 1; ; attempt++ {
+		var rdr io.Reader
+		if len(body) > 0 {
+			rdr = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, u.String(), rdr)
+		if err != nil {
+			return nil, fmt.Errorf("build request: %w", err)
+		}
+		req.SetBasicAuth(c.username, c.password)
+		req.Header.Set("Accept", "application/json")
+		if len(body) > 0 {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		c.log("%s %s (attempt %d/%d)", method, u.Redacted(), attempt, maxAttempts)
+		resp, err := c.hc.Do(req)
+		if err != nil {
+			return nil, &NetworkError{Err: err}
+		}
+		if wait, ok := retryAfter(resp, attempt); ok {
+			c.log("HTTP %d, retrying in %s", resp.StatusCode, wait)
+			select {
+			case <-time.After(wait):
+				continue
+			case <-ctx.Done():
+				return nil, &NetworkError{Err: ctx.Err()}
+			}
+		}
+		data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+		resp.Body.Close()
+		if err != nil {
+			return nil, &NetworkError{Err: err}
+		}
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			return nil, apiError(resp.StatusCode, data)
+		}
+		return data, nil
+	}
+}
+
+// Attachment fetches one attachment's metadata by sys_id.
+func (c *Client) Attachment(ctx context.Context, sysID string) (Record, error) {
+	var out struct {
+		Result Record `json:"result"`
+	}
+	if err := c.GetJSON(ctx, "/api/now/attachment/"+url.PathEscape(sysID), nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Result, nil
+}
+
+// DownloadAttachment streams the attachment's bytes to w, returning the
+// count written. No body-size cap here: attachments are the one
+// legitimately large payload.
+func (c *Client) DownloadAttachment(ctx context.Context, sysID string, w io.Writer) (int64, error) {
+	u := *c.base
+	u.Path += "/api/now/attachment/" + url.PathEscape(sysID) + "/file"
+
+	for attempt := 1; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return 0, fmt.Errorf("build request: %w", err)
+		}
+		req.SetBasicAuth(c.username, c.password)
+
+		c.log("GET %s (attempt %d/%d)", u.Redacted(), attempt, maxAttempts)
+		resp, err := c.hc.Do(req)
+		if err != nil {
+			return 0, &NetworkError{Err: err}
+		}
+		if wait, ok := retryAfter(resp, attempt); ok {
+			c.log("HTTP %d, retrying in %s", resp.StatusCode, wait)
+			select {
+			case <-time.After(wait):
+				continue
+			case <-ctx.Done():
+				return 0, &NetworkError{Err: ctx.Err()}
+			}
+		}
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+			resp.Body.Close()
+			return 0, apiError(resp.StatusCode, body)
+		}
+		n, err := io.Copy(w, resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return n, &NetworkError{Err: err}
+		}
+		return n, nil
 	}
 }
 
@@ -221,6 +332,23 @@ func (c *Client) Count(ctx context.Context, table, encodedQuery string) (int, er
 	return n, nil
 }
 
+// apiError builds the typed error for a non-2xx response, extracting the
+// ServiceNow error envelope when present.
+func apiError(statusCode int, body []byte) *APIError {
+	apiErr := &APIError{StatusCode: statusCode}
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+			Detail  string `json:"detail"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &envelope) == nil {
+		apiErr.Message = envelope.Error.Message
+		apiErr.Detail = envelope.Error.Detail
+	}
+	return apiErr
+}
+
 func retryDelay(resp *http.Response, attempt int) time.Duration {
 	if s := resp.Header.Get("Retry-After"); s != "" {
 		if secs, err := strconv.Atoi(s); err == nil && secs >= 0 {
@@ -239,18 +367,7 @@ func decodeResponse(resp *http.Response, out any) error {
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		apiErr := &APIError{StatusCode: resp.StatusCode}
-		var envelope struct {
-			Error struct {
-				Message string `json:"message"`
-				Detail  string `json:"detail"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(body, &envelope) == nil {
-			apiErr.Message = envelope.Error.Message
-			apiErr.Detail = envelope.Error.Detail
-		}
-		return apiErr
+		return apiError(resp.StatusCode, body)
 	}
 
 	if out == nil {
