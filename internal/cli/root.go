@@ -69,6 +69,8 @@ func newRootCmd() *cobra.Command {
 		newQueryCmd(),
 		newGetCmd(),
 		newCountCmd(),
+		newSchemaCmd(),
+		newTablesCmd(),
 		newWhoamiCmd(),
 		newProfileCmd(),
 	)

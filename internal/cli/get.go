@@ -49,7 +49,16 @@ func newGetCmd() *cobra.Command {
 			}
 			ctx := cmd.Context()
 
+			store := schemaStore(client)
 			explicit := splitFields(fields)
+			// Pre-flight typo check from cache only — never an extra call.
+			if len(explicit) > 0 {
+				if meta := store.GetCached(table); meta != nil {
+					if err := meta.Validate(explicit); err != nil {
+						return err
+					}
+				}
+			}
 			baseQuery := url.Values{}
 			baseQuery.Set("sysparm_display_value", displayValue(raw))
 			baseQuery.Set("sysparm_exclude_reference_link", "true")
@@ -61,7 +70,7 @@ func newGetCmd() *cobra.Command {
 				baseQuery.Set("sysparm_fields", strings.Join(requested, ","))
 			}
 
-			fetch := newRecordFetcher(client, table, baseQuery)
+			fetch := newRecordFetcher(client, store, table, baseQuery)
 
 			if key == "-" {
 				scanner := bufio.NewScanner(cmd.InOrStdin())
@@ -114,8 +123,8 @@ func newGetCmd() *cobra.Command {
 
 // newRecordFetcher resolves keys to records: 32-hex keys fetch directly,
 // anything else is looked up by record number, then by the table's display
-// field (schema metadata is fetched once, lazily).
-func newRecordFetcher(client *snow.Client, table string, baseQuery url.Values) func(context.Context, string) (snow.Record, error) {
+// field (schema metadata comes through the cache, fetched once, lazily).
+func newRecordFetcher(client *snow.Client, store *schema.Store, table string, baseQuery url.Values) func(context.Context, string) (snow.Record, error) {
 	var meta *schema.TableMeta
 	return func(ctx context.Context, key string) (snow.Record, error) {
 		if sysIDPattern.MatchString(key) {
@@ -123,7 +132,7 @@ func newRecordFetcher(client *snow.Client, table string, baseQuery url.Values) f
 		}
 
 		if meta == nil {
-			m, err := schema.Fetch(ctx, client, table)
+			m, err := store.Get(ctx, table)
 			if err != nil {
 				return nil, err
 			}
