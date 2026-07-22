@@ -76,7 +76,9 @@ func newGetCmd() *cobra.Command {
 				scanner := bufio.NewScanner(cmd.InOrStdin())
 				opts := output.Options{Format: "jsonl", Full: full}
 				for scanner.Scan() {
-					k := strings.TrimSpace(scanner.Text())
+					// PowerShell pipes prepend a UTF-8 BOM, which is not
+					// whitespace — strip it or the first key never matches.
+					k := strings.TrimSpace(strings.TrimPrefix(scanner.Text(), "\ufeff"))
 					if k == "" {
 						continue
 					}

@@ -100,17 +100,25 @@ func newAPICmd() *cobra.Command {
 }
 
 // readBodyArg resolves --body: a literal JSON string, @file, or @- (stdin).
+// A leading UTF-8 BOM is stripped — PowerShell pipes and Windows editors
+// prepend one, and a BOM is invalid JSON.
 func readBodyArg(cmd *cobra.Command, body string) ([]byte, error) {
+	var data []byte
+	var err error
 	switch {
 	case body == "":
 		return nil, nil
 	case body == "@-":
-		return io.ReadAll(cmd.InOrStdin())
+		data, err = io.ReadAll(cmd.InOrStdin())
 	case strings.HasPrefix(body, "@"):
-		return os.ReadFile(body[1:])
+		data, err = os.ReadFile(body[1:])
 	default:
-		return []byte(body), nil
+		data = []byte(body)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return bytes.TrimPrefix(data, []byte("\ufeff")), nil
 }
 
 // renderAPIResponse formats an arbitrary REST response with the shared
