@@ -103,6 +103,16 @@ end to end.*
 Fresh session per task, same model, tool-neutral phrasing — the session's available tooling
 (MCP fleet vs. glm + skill) is the only variable. Spot-check answers before recording.
 
+**Baseline sessions** have exactly two MCP servers connected — SNDev (`sn_*`) and SmartWork
+(`sn_work_*`); disconnect `qa_sn_work_*`, `snfed_*`, and anything else so defunct tool
+schemas don't inflate the baseline. Every baseline task prompt is prefixed with this
+identical preamble (the counterpart of the glm skill's orientation on the glm side):
+
+> You have ServiceNow access through two sets of MCP tools: the sn_* tools are our
+> development instance (scripts, schema, update sets, logs, compliance data) and the
+> sn_work_* tools are our SmartWork system with live work-management data. Use whichever
+> fit the task. Ignore any other connectors.
+
 - **T1:** On our dev ServiceNow instance, list all active business rules on the
   x_n1ll2_smart_gmt_todo table with name, when they run, order, and condition. Then show me
   the complete script of the one named "SmartWork - Validate Todo Order".
