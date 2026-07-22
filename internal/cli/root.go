@@ -48,6 +48,14 @@ func newRootCmd() *cobra.Command {
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Stray positional args (e.g. a typo'd subcommand) must fail with
+		// exit 1, not fall into cobra's help path with exit 0. Args alone
+		// is not enough: cobra only validates args on runnable commands,
+		// so the root gets an explicit help action.
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
 	}
 
 	pf := cmd.PersistentFlags()
