@@ -94,6 +94,12 @@ func (c *Client) BaseURL() string { return c.base.String() }
 // GetJSON performs a GET with bounded retries on 429/503 (honoring
 // Retry-After) and decodes the JSON response into out (which may be nil).
 func (c *Client) GetJSON(ctx context.Context, path string, query url.Values, out any) error {
+	_, err := c.getJSON(ctx, path, query, out)
+	return err
+}
+
+// getJSON is GetJSON plus the response headers (for X-Total-Count).
+func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out any) (http.Header, error) {
 	u := *c.base
 	u.Path += path
 	u.RawQuery = query.Encode()
@@ -101,7 +107,7 @@ func (c *Client) GetJSON(ctx context.Context, path string, query url.Values, out
 	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 		if err != nil {
-			return fmt.Errorf("build request: %w", err)
+			return nil, fmt.Errorf("build request: %w", err)
 		}
 		req.SetBasicAuth(c.username, c.password)
 		req.Header.Set("Accept", "application/json")
@@ -109,7 +115,7 @@ func (c *Client) GetJSON(ctx context.Context, path string, query url.Values, out
 		c.log("GET %s (attempt %d/%d)", u.Redacted(), attempt, maxAttempts)
 		resp, err := c.hc.Do(req)
 		if err != nil {
-			return &NetworkError{Err: err}
+			return nil, &NetworkError{Err: err}
 		}
 
 		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable
@@ -122,22 +128,73 @@ func (c *Client) GetJSON(ctx context.Context, path string, query url.Values, out
 			case <-time.After(wait):
 				continue
 			case <-ctx.Done():
-				return &NetworkError{Err: ctx.Err()}
+				return nil, &NetworkError{Err: ctx.Err()}
 			}
 		}
-		return decodeResponse(resp, out)
+		return resp.Header, decodeResponse(resp, out)
 	}
 }
 
 // Table fetches rows from the Table API for the given query parameters.
 func (c *Client) Table(ctx context.Context, table string, query url.Values) ([]Record, error) {
+	records, _, err := c.TablePage(ctx, table, query)
+	return records, err
+}
+
+// TablePage fetches rows plus the total match count from the X-Total-Count
+// header; total is -1 when the instance does not provide it.
+func (c *Client) TablePage(ctx context.Context, table string, query url.Values) ([]Record, int, error) {
 	var out struct {
 		Result []Record `json:"result"`
 	}
-	if err := c.GetJSON(ctx, "/api/now/table/"+url.PathEscape(table), query, &out); err != nil {
+	header, err := c.getJSON(ctx, "/api/now/table/"+url.PathEscape(table), query, &out)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := -1
+	if v := header.Get("X-Total-Count"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			total = n
+		}
+	}
+	return out.Result, total, nil
+}
+
+// GetRecord fetches a single record by sys_id.
+func (c *Client) GetRecord(ctx context.Context, table, sysID string, query url.Values) (Record, error) {
+	var out struct {
+		Result Record `json:"result"`
+	}
+	path := "/api/now/table/" + url.PathEscape(table) + "/" + url.PathEscape(sysID)
+	if err := c.GetJSON(ctx, path, query, &out); err != nil {
 		return nil, err
 	}
 	return out.Result, nil
+}
+
+// Count returns the number of matching rows via the Aggregate API — the
+// cheapest possible answer to "how many".
+func (c *Client) Count(ctx context.Context, table, encodedQuery string) (int, error) {
+	q := url.Values{}
+	q.Set("sysparm_count", "true")
+	if encodedQuery != "" {
+		q.Set("sysparm_query", encodedQuery)
+	}
+	var out struct {
+		Result struct {
+			Stats struct {
+				Count string `json:"count"`
+			} `json:"stats"`
+		} `json:"result"`
+	}
+	if err := c.GetJSON(ctx, "/api/now/stats/"+url.PathEscape(table), q, &out); err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(out.Result.Stats.Count)
+	if err != nil {
+		return 0, fmt.Errorf("unexpected count value %q from stats API", out.Result.Stats.Count)
+	}
+	return n, nil
 }
 
 func retryDelay(resp *http.Response, attempt int) time.Duration {
