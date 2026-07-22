@@ -1,16 +1,63 @@
 package snow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/tcurtsinger/GlideMind/internal/exit"
 )
+
+func TestRawDoesNotRetryWrites(t *testing.T) {
+	attempts := 0
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	_, err := c.Raw(context.Background(), http.MethodPost, "/api/write", nil, []byte(`{}`))
+	if err == nil {
+		t.Fatal("want the 503 surfaced as an error")
+	}
+	if attempts != 1 {
+		t.Errorf("a non-GET request must hit the wire exactly once, got %d attempts", attempts)
+	}
+}
+
+func TestRawRetriesGet(t *testing.T) {
+	attempts := 0
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Write([]byte(`{"result":[]}`)) //nolint:errcheck
+	}))
+	if _, err := c.Raw(context.Background(), http.MethodGet, "/api/read", nil, nil); err != nil {
+		t.Fatalf("GET should retry transparently: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("want 2 attempts, got %d", attempts)
+	}
+}
+
+func TestRawRejectsOversizedResponse(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bytes.Repeat([]byte("x"), maxBodyBytes+1)) //nolint:errcheck
+	}))
+	_, err := c.Raw(context.Background(), http.MethodGet, "/api/huge", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "MiB buffer") {
+		t.Errorf("oversized response must error loudly, not truncate, got: %v", err)
+	}
+}
 
 func TestNormalizeInstance(t *testing.T) {
 	cases := []struct {

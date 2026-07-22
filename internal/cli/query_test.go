@@ -20,6 +20,7 @@ const (
 	sysIDa = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	sysIDb = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	sysIDc = "cccccccccccccccccccccccccccccccc"
+	sysIDd = "dddddddddddddddddddddddddddddddd"
 )
 
 // fakeInstance serves schema metadata, incident rows, stats, and script
@@ -131,6 +132,45 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 		}
 		writeResult(w, []map[string]any{{"sys_id": sysIDc, "short_description": "Hide VIP fields",
 			"script_true": "g_form.setDisplay('vip', false);\nvar repo = new C1Repository('incident');"}})
+	})
+	mux.HandleFunc("/api/now/table/sys_attachment", func(w http.ResponseWriter, r *http.Request) {
+		bump("attach")
+		if v := r.URL.Query().Get("sysparm_offset"); v != "" {
+			bump("attach-offset-" + v)
+		}
+		if r.URL.Query().Get("sysparm_query") != "table_name=incident^table_sys_id="+sysIDa+"^ORDERBYfile_name" {
+			writeResult(w, []map[string]any{})
+			return
+		}
+		writeResult(w, []map[string]any{
+			{"sys_id": sysIDc, "file_name": "error.log", "size_bytes": "22", "content_type": "text/plain", "sys_updated_on": "2026-07-22 04:00:00"},
+			{"sys_id": sysIDd, "file_name": "screenshot.png", "size_bytes": "34518", "content_type": "image/png", "sys_updated_on": "2026-07-22 04:00:00"},
+		})
+	})
+	mux.HandleFunc("/api/now/table/long_story", func(w http.ResponseWriter, r *http.Request) {
+		bump("list")
+		writeResult(w, []map[string]any{{"sys_id": sysIDa, "tale": strings.Repeat("x", 2500)}})
+	})
+	mux.HandleFunc("/api/now/attachment/", func(w http.ResponseWriter, r *http.Request) {
+		bump("attach")
+		// sysIDd is the attachment whose download always fails.
+		broken := strings.Contains(r.URL.Path, sysIDd)
+		if strings.HasSuffix(r.URL.Path, "/file") {
+			if broken {
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte(`{"error":{"message":"attachment storage offline"}}`)) //nolint:errcheck
+				return
+			}
+			w.Write([]byte("log line 1\nlog line 2\n")) //nolint:errcheck
+			return
+		}
+		name := "error.log"
+		if broken {
+			name = "broken.log"
+		}
+		writeResult(w, map[string]any{
+			"sys_id": sysIDc, "file_name": name, "size_bytes": "22", "content_type": "text/plain",
+		})
 	})
 	mux.HandleFunc("/api/now/table/incident/", func(w http.ResponseWriter, r *http.Request) {
 		bump("get")
