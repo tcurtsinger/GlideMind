@@ -142,7 +142,7 @@ func newQueryCmd() *cobra.Command {
 // addQueryFlags registers the filter flags shared with count.
 func addQueryFlags(cmd *cobra.Command, o *queryOpts) {
 	cmd.Flags().StringArrayVarP(&o.queries, "query", "q", nil, "encoded query clause; repeatable, joined with ^")
-	cmd.Flags().StringVar(&o.since, "since", "", "only records created in the last 15m|2h|3d")
+	cmd.Flags().StringVar(&o.since, "since", "", "only records created or updated in the last 15m|2h|3d")
 }
 
 // buildEncodedQuery joins -q clauses, --since, and --order-by into one
@@ -155,11 +155,11 @@ func buildEncodedQuery(o *queryOpts, allowOrder bool) (string, error) {
 		}
 	}
 	if o.since != "" {
-		minutes, err := parseSince(o.since)
+		clause, err := sinceClause(o.since)
 		if err != nil {
 			return "", err
 		}
-		parts = append(parts, fmt.Sprintf("sys_created_on>=javascript:gs.minutesAgoStart(%d)", minutes))
+		parts = append(parts, clause)
 	}
 	if allowOrder && o.orderBy != "" {
 		if rest, ok := strings.CutPrefix(o.orderBy, "-"); ok {
@@ -169,6 +169,18 @@ func buildEncodedQuery(o *queryOpts, allowOrder bool) (string, error) {
 		}
 	}
 	return strings.Join(parts, "^"), nil
+}
+
+// sinceClause compiles a --since value into the encoded time clause shared
+// by every read command (query/count/agg/grep). sys_updated_on is stamped at
+// creation and only ever advances, so this one clause means "created or
+// updated since".
+func sinceClause(s string) (string, error) {
+	minutes, err := parseSince(s)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("sys_updated_on>=javascript:gs.minutesAgoStart(%d)", minutes), nil
 }
 
 // parseSince converts 15m/2h/3d into whole minutes for
@@ -255,6 +267,16 @@ func displayValue(raw bool) string {
 		return "false"
 	}
 	return "true"
+}
+
+// encodedQueryValue rejects values that would break out of an encoded-query
+// clause — ^ is the clause separator and ServiceNow has no in-value escape
+// for it, so a caret would inject query logic or silently miss matches.
+func encodedQueryValue(kind, v string) error {
+	if strings.Contains(v, "^") {
+		return fmt.Errorf(`%s contains "^", the encoded-query separator, which cannot be matched server-side — narrow it to a fragment without "^"`, kind)
+	}
+	return nil
 }
 
 func splitFields(s string) []string {

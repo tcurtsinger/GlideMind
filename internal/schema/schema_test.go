@@ -35,6 +35,7 @@ func fakeInstance(t *testing.T) *snow.Client {
 		var rows []map[string]any
 		if strings.Contains(q, "incident") {
 			rows = []map[string]any{
+				{"name": "task", "element": "sys_id", "internal_type": "GUID", "display": "false", "reference.name": ""},
 				{"name": "task", "element": "number", "internal_type": "string", "display": "true", "reference.name": ""},
 				{"name": "task", "element": "short_description", "internal_type": "string", "display": "false", "reference.name": ""},
 				{"name": "task", "element": "assigned_to", "internal_type": "reference", "display": "false", "reference.name": "sys_user"},
@@ -47,6 +48,7 @@ func fakeInstance(t *testing.T) *snow.Client {
 			}
 		} else if strings.Contains(q, "u_gadget") {
 			rows = []map[string]any{
+				{"name": "u_gadget", "element": "sys_id", "internal_type": "GUID", "display": "false", "reference.name": ""},
 				{"name": "u_gadget", "element": "name", "internal_type": "string", "display": "false", "reference.name": ""},
 				{"name": "u_gadget", "element": "u_lifecycle_state", "internal_type": "integer", "display": "false", "reference.name": ""},
 				{"name": "u_gadget", "element": "owner", "internal_type": "reference", "display": "false", "reference.name": "sys_user"},

@@ -12,7 +12,21 @@ func testMeta() *TableMeta {
 			"state": {}, "priority": {}, "short_description": {},
 			"assigned_to": {Type: "reference", Reference: "sys_user"},
 			"number":      {},
+			"sys_id":      {}, // completeness sentinel — validation requires it
 		},
+	}
+}
+
+func TestValidateSkipsIncompleteDictionary(t *testing.T) {
+	// A dictionary without the sys_id row is ACL-filtered or partial;
+	// validation must skip rather than reject fields it cannot see.
+	m := &TableMeta{Name: "incident", Fields: map[string]Field{"state": {}}}
+	if err := m.Validate([]string{"definitely_not_visible"}); err != nil {
+		t.Fatalf("partial dictionary must not fail validation: %v", err)
+	}
+	empty := &TableMeta{Name: "incident", Fields: map[string]Field{}}
+	if err := empty.Validate([]string{"anything"}); err != nil {
+		t.Fatalf("empty dictionary must not fail validation: %v", err)
 	}
 }
 

@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tcurtsinger/GlideMind/internal/config"
@@ -17,12 +19,20 @@ import (
 const (
 	sysIDa = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	sysIDb = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	sysIDc = "cccccccccccccccccccccccccccccccc"
 )
 
-// fakeInstance serves schema metadata, incident rows, and count stats;
-// hits tracks which surfaces were touched.
+// fakeInstance serves schema metadata, incident rows, stats, and script
+// tables; hits tracks which surfaces were touched (mutex-guarded — grep
+// queries tables concurrently).
 func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 	t.Helper()
+	var hitsMu sync.Mutex
+	bump := func(key string) {
+		hitsMu.Lock()
+		hits[key]++
+		hitsMu.Unlock()
+	}
 	writeResult := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"result": v}) //nolint:errcheck
@@ -38,7 +48,7 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/now/table/sys_db_object", func(w http.ResponseWriter, r *http.Request) {
-		hits["schema"]++
+		bump("schema")
 		q := r.URL.Query().Get("sysparm_query")
 		var rows []map[string]any
 		switch {
@@ -52,8 +62,9 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 		writeResult(w, rows)
 	})
 	mux.HandleFunc("/api/now/table/sys_dictionary", func(w http.ResponseWriter, r *http.Request) {
-		hits["schema"]++
+		bump("schema")
 		writeResult(w, []map[string]any{
+			{"name": "task", "element": "sys_id", "internal_type": "GUID", "display": "false", "reference.name": ""},
 			{"name": "task", "element": "number", "internal_type": "string", "display": "true", "reference.name": ""},
 			{"name": "task", "element": "short_description", "internal_type": "string", "display": "false", "reference.name": "", "mandatory": "true"},
 			{"name": "task", "element": "assigned_to", "internal_type": "reference", "display": "false", "reference.name": "sys_user"},
@@ -65,16 +76,69 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 		})
 	})
 	mux.HandleFunc("/api/now/stats/incident", func(w http.ResponseWriter, r *http.Request) {
-		hits["stats"]++
-		writeResult(w, map[string]any{"stats": map[string]any{"count": "42"}})
+		bump("stats")
+		if r.URL.Query().Get("sysparm_group_by") == "" {
+			writeResult(w, map[string]any{"stats": map[string]any{"count": "42"}})
+			return
+		}
+		stats1 := map[string]any{"count": "5"}
+		stats2 := map[string]any{"count": "3"}
+		if r.URL.Query().Get("sysparm_sum_fields") != "" {
+			stats1["sum"] = map[string]any{"reassignment_count": "7"}
+			stats2["sum"] = map[string]any{"reassignment_count": "2"}
+		}
+		// Deliberately unsorted: New (3) before In Progress (5).
+		writeResult(w, []map[string]any{
+			{"stats": stats2, "groupby_fields": []map[string]any{{"field": "state", "value": "New"}}},
+			{"stats": stats1, "groupby_fields": []map[string]any{{"field": "state", "value": "In Progress"}}},
+		})
+	})
+	scriptRec := func(id, name, script string) map[string]any {
+		return map[string]any{"sys_id": id, "name": name, "script": script}
+	}
+	mux.HandleFunc("/api/now/table/sys_script", func(w http.ResponseWriter, r *http.Request) {
+		bump("grep")
+		if strings.Contains(r.URL.Query().Get("sysparm_query"), "sys_updated_on>=javascript:gs.minutesAgoStart(120)") {
+			bump("grep-since-120")
+		}
+		writeResult(w, []map[string]any{scriptRec(sysIDa, "Incident autoclose",
+			"// closes stale incidents\nvar repo = new C1Repository('incident');\nrepo.closeStale();")})
+	})
+	mux.HandleFunc("/api/now/table/sys_script_include", func(w http.ResponseWriter, r *http.Request) {
+		bump("grep")
+		lines := make([]string, 7)
+		for i := range lines {
+			lines[i] = "C1Repository.prototype.method" + strconv.Itoa(i) + " = function() {};"
+		}
+		writeResult(w, []map[string]any{scriptRec(sysIDb, "C1Repository", strings.Join(lines, "\n"))})
+	})
+	mux.HandleFunc("/api/now/table/sys_script_client", func(w http.ResponseWriter, r *http.Request) {
+		bump("grep")
+		writeResult(w, []map[string]any{})
+	})
+	mux.HandleFunc("/api/now/table/sys_ui_action", func(w http.ResponseWriter, r *http.Request) {
+		bump("grep")
+		writeResult(w, []map[string]any{})
+	})
+	// No name column (like the real table) — grep must fall back to
+	// short_description. Only the script_true LIKE query matches, mirroring
+	// the server-side filter.
+	mux.HandleFunc("/api/now/table/sys_ui_policy", func(w http.ResponseWriter, r *http.Request) {
+		bump("grep")
+		if !strings.HasPrefix(r.URL.Query().Get("sysparm_query"), "script_trueLIKE") {
+			writeResult(w, []map[string]any{})
+			return
+		}
+		writeResult(w, []map[string]any{{"sys_id": sysIDc, "short_description": "Hide VIP fields",
+			"script_true": "g_form.setDisplay('vip', false);\nvar repo = new C1Repository('incident');"}})
 	})
 	mux.HandleFunc("/api/now/table/incident/", func(w http.ResponseWriter, r *http.Request) {
-		hits["get"]++
+		bump("get")
 		id := strings.TrimPrefix(r.URL.Path, "/api/now/table/incident/")
 		writeResult(w, incidentRow(id, "INC0000001", "Printer on fire"))
 	})
 	mux.HandleFunc("/api/now/table/incident", func(w http.ResponseWriter, r *http.Request) {
-		hits["list"]++
+		bump("list")
 		q := r.URL.Query().Get("sysparm_query")
 		if strings.Contains(q, "number=INC0000001") {
 			writeResult(w, []map[string]any{incidentRow(sysIDa, "INC0000001", "Printer on fire")})
@@ -261,6 +325,156 @@ func TestGetStdinBatchEmitsJSONL(t *testing.T) {
 	}
 	if hits["get"] != 2 {
 		t.Errorf("expected 2 direct fetches, hits=%v", hits)
+	}
+}
+
+func TestAggGroupBySortsByCountDesc(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	stdout, stderr := runGlm(t, srv, "", "agg", "incident", "--group-by", "state")
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	want := []string{"state\tcount", "In Progress\t5", "New\t3"}
+	if strings.Join(lines, "|") != strings.Join(want, "|") {
+		t.Errorf("agg output = %q, want %q", lines, want)
+	}
+	if !strings.Contains(stderr, "groups 1-2 of 2") {
+		t.Errorf("groups meta missing: %q", stderr)
+	}
+}
+
+func TestAggSumColumns(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	stdout, _ := runGlm(t, srv, "", "agg", "incident", "--group-by", "state", "--sum", "reassignment_count")
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if lines[0] != "state\tsum(reassignment_count)" {
+		t.Errorf("sum header = %q (count must not be implied alongside --sum)", lines[0])
+	}
+	if lines[1] != "In Progress\t7" {
+		t.Errorf("sum rows should sort by the aggregate desc: %q", lines[1])
+	}
+}
+
+func TestAggWithoutGroupIsSingleRow(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	stdout, stderr := runGlm(t, srv, "", "agg", "incident")
+	if strings.TrimRight(stdout, "\n") != "count\n42" {
+		t.Errorf("ungrouped agg = %q", stdout)
+	}
+	if strings.Contains(stderr, "groups") {
+		t.Errorf("no groups meta expected without --group-by: %q", stderr)
+	}
+}
+
+func TestGrepTextOutput(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	stdout, stderr := runGlm(t, srv, "", "grep", "C1Repository")
+	if !strings.Contains(stdout, "sys_script:Incident autoclose:2: var repo = new C1Repository('incident');") {
+		t.Errorf("business-rule match line missing:\n%s", stdout)
+	}
+	// 7 matching lines capped at 5 with a remainder marker naming the remedy.
+	if !strings.Contains(stdout, "sys_script_include:C1Repository: +2 more matches (glm get sys_script_include "+sysIDb+" --fields script --full)") {
+		t.Errorf("cap marker missing:\n%s", stdout)
+	}
+	// sys_ui_policy has no name column — short_description stands in.
+	if !strings.Contains(stdout, "sys_ui_policy:Hide VIP fields:2: var repo = new C1Repository('incident');") {
+		t.Errorf("ui policy match missing:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "7 matching lines in 3 records - searched sys_script, sys_script_include, sys_script_client, sys_ui_action, sys_ui_policy") {
+		t.Errorf("summary wrong: %q", stderr)
+	}
+}
+
+func TestGrepMissingFieldSkipsRecords(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	// The incident fixture returns rows for any query but has no script
+	// field — like an instance that ignores invalid query fields. Those
+	// rows must not surface as matches.
+	stdout, stderr := runGlm(t, srv, "", "grep", "C1Repository", "--tables", "sys_script,incident")
+	if strings.Contains(stdout, "Printer on fire") || strings.Contains(stdout, "(match spans lines)") {
+		t.Errorf("records without the searched field must not become matches:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "sys_script:Incident autoclose:2:") {
+		t.Errorf("real matches must survive:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, `incident: field "script" empty or missing in 2 record(s)`) {
+		t.Errorf("want missing-field warning, got: %q", stderr)
+	}
+
+	// Every target useless -> hard error with the schema remedy.
+	_, _, err := runGlmErr(t, srv, "", "grep", "C1Repository", "--tables", "incident")
+	if err == nil || !strings.Contains(err.Error(), "glm schema incident") {
+		t.Errorf("grep on a table without the field should fail with a remedy, got: %v", err)
+	}
+}
+
+func TestGrepSince(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	runGlm(t, srv, "", "grep", "C1Repository", "--since", "2h")
+	if hits["grep-since-120"] != 1 {
+		t.Errorf("--since 2h must add the minutesAgoStart(120) clause to the table queries")
+	}
+	if _, _, err := runGlmErr(t, srv, "", "grep", "x", "--since", "soon"); err == nil || !strings.Contains(err.Error(), "invalid --since") {
+		t.Errorf("bad --since should be rejected, got: %v", err)
+	}
+}
+
+func TestGrepJSONL(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	stdout, _ := runGlm(t, srv, "", "grep", "C1Repository", "--json")
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if len(lines) != 7 {
+		t.Fatalf("want 7 jsonl match lines, got %d:\n%s", len(lines), stdout)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &obj); err != nil {
+		t.Fatalf("not jsonl: %v", err)
+	}
+	for _, key := range []string{"table", "field", "sys_id", "name", "line", "text"} {
+		if _, ok := obj[key]; !ok {
+			t.Errorf("jsonl match missing %q: %s", key, lines[0])
+		}
+	}
+}
+
+func TestCaretValuesRejected(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	if _, _, err := runGlmErr(t, srv, "", "grep", "active=true^priority=1"); err == nil || !strings.Contains(err.Error(), "encoded-query separator") {
+		t.Errorf("grep pattern with ^ should be rejected, got: %v", err)
+	}
+	if _, _, err := runGlmErr(t, srv, "", "tables", "a^b"); err == nil || !strings.Contains(err.Error(), "encoded-query separator") {
+		t.Errorf("tables pattern with ^ should be rejected, got: %v", err)
+	}
+	if _, _, err := runGlmErr(t, srv, "", "get", "incident", "a^b"); err == nil || !strings.Contains(err.Error(), "sys_id") {
+		t.Errorf("get key with ^ should be rejected with sys_id remedy, got: %v", err)
+	}
+}
+
+func TestGrepFormatJSONIsSingleDocument(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	stdout, _ := runGlm(t, srv, "", "grep", "C1Repository", "--format", "json")
+	var objs []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &objs); err != nil {
+		t.Fatalf("--format json must be one JSON document: %v\n%s", err, stdout)
+	}
+	if len(objs) != 7 {
+		t.Errorf("want 7 match objects, got %d", len(objs))
 	}
 }
 
