@@ -82,6 +82,36 @@ zero configuration, zero prior knowledge.
 *Exercises: `glm tables`, `glm schema`, auto-derived default fields — the zero-config promise
 end to end.*
 
+## Task prompts (use verbatim in both runs)
+
+Fresh session per task, same model, tool-neutral phrasing — the session's available tooling
+(MCP fleet vs. glm + skill) is the only variable. Spot-check answers before recording.
+
+- **T1:** On our dev ServiceNow instance, list all active business rules on the
+  x_n1ll2_smart_gmt_todo table with name, when they run, order, and condition. Then show me
+  the complete script of the one named "SmartWork - Validate Todo Order".
+- **T2:** Search our dev instance for every business rule, script include, and client script
+  that references processApprovedTimesheet. Show table, record name, and the matching lines only.
+- **T3:** On our dev instance, show every field on the x_n1ll2_smart_gmt_timesheet table
+  including inherited ones, with type, reference target, and mandatory flag. Then tell me
+  whether the fields week_ending, total_hours, and approver exist, and list the 5 most recent
+  timesheets using whichever of those exist.
+  *(Ground truth: week_ending and total_hours exist; "approver" does not — the real field is
+  approved_by, so this also scores the did-you-mean experience.)*
+- **T4:** On our dev instance, list in-progress update sets for the x_n1ll2_smart_gmt
+  application, then summarize what the update set named "Travis Curtsinger" captured, grouped
+  by artifact type.
+- **T5:** Show error and warning log entries from the last 15 minutes on our dev instance
+  whose source starts with x_n1ll2, newest first.
+- **T6 — TBD** pending GRC table names.
+- **T7 — TBD** pending GRC table names.
+- **T8 — TBD** pending a North Star name and the user whose work to list ("assigned to me"
+  must name a real person — the benchmark session authenticates as svc.glm).
+- **T9 — TBD** pending the QA profile and scripted REST endpoint path.
+- **T10:** There's a custom table somewhere on our dev instance whose label is roughly
+  "Milestone". Find it, show me its structure, and give me the 5 most recent records with
+  sensible columns.
+
 ## Results
 
 | Task | MCP baseline tokens | glm tokens | Ratio | Completed? | Notes |
