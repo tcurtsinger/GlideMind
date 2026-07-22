@@ -1,6 +1,6 @@
-# Binaries
-glm
-glm.exe
+# Binaries (root-anchored so cmd/glm/ stays tracked)
+/glm
+/glm.exe
 /dist/
 
 # Test artifacts
