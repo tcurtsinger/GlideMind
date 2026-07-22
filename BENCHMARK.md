@@ -15,13 +15,15 @@ retires. Tasks are drawn from the real weekly workloads (DESIGN.md §13).
 
 ## Fill in before running
 
-- [ ] Profile names for dev + QA instances
-- [ ] Scoped-app scope name for tasks 1–5 (e.g. `x_...`)
-- [ ] A real function/token for the grep task (e.g. `C1Repository`)
+- [ ] Profile names for dev + QA instances — dev: `dev` (ven07100, `svc.glm`) · QA: **TBD**
+- [x] Scoped-app scope name for tasks 1–5 — `x_n1ll2_smart_gmt`
+- [x] A real function/token for the grep task — `processApprovedTimesheet`
 - [ ] GRC table names on the instance that holds compliance data (authority documents,
-      citations, controls, attestations, risks) — verify actual plugin table names
-- [ ] SmartWork table names + one scripted REST endpoint path for task 9 (QA instance)
-- [ ] A custom table the agent has never been told about, for task 10
+      citations, controls, attestations, risks) — verify actual plugin table names — **TBD**
+- [ ] SmartWork table names + one scripted REST endpoint path for task 9 (QA instance) — **TBD**
+- [x] A custom table the agent has never been told about, for task 10 — label **"Milestone"**
+      (label only, on purpose: its name, schema, and fields stay unrecorded so the
+      cold-start test is honest)
 
 ## Tasks
 
