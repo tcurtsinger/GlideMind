@@ -131,7 +131,16 @@ func newGrepCmd() *cobra.Command {
 					if len(records) == limit && !contains(capped, tg.table) {
 						capped = append(capped, tg.table)
 					}
+					missing := 0
 					for _, rec := range records {
+						// A LIKE match cannot come from an empty field: the
+						// instance ignored an invalid query field (returning
+						// arbitrary rows) or an ACL blanked the value. Skip
+						// instead of manufacturing a match.
+						if output.Value(rec, tg.field) == "" {
+							missing++
+							continue
+						}
 						sysID := output.Value(rec, "sys_id")
 						name := output.Value(rec, "name")
 						if name == "" {
@@ -147,6 +156,10 @@ func newGrepCmd() *cobra.Command {
 						}
 						m.lines, m.more = matchLines(output.Value(rec, tg.field), pattern, maxMatches)
 						matches = append(matches, m)
+					}
+					if missing > 0 {
+						warns = append(warns, fmt.Sprintf("%s: field %q empty or missing in %d record(s) - not searchable (glm schema %s)",
+							tg.table, tg.field, missing, tg.table))
 					}
 				}(tg)
 			}

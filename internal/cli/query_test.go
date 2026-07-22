@@ -391,6 +391,31 @@ func TestGrepTextOutput(t *testing.T) {
 	}
 }
 
+func TestGrepMissingFieldSkipsRecords(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	// The incident fixture returns rows for any query but has no script
+	// field — like an instance that ignores invalid query fields. Those
+	// rows must not surface as matches.
+	stdout, stderr := runGlm(t, srv, "", "grep", "C1Repository", "--tables", "sys_script,incident")
+	if strings.Contains(stdout, "Printer on fire") || strings.Contains(stdout, "(match spans lines)") {
+		t.Errorf("records without the searched field must not become matches:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "sys_script:Incident autoclose:2:") {
+		t.Errorf("real matches must survive:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, `incident: field "script" empty or missing in 2 record(s)`) {
+		t.Errorf("want missing-field warning, got: %q", stderr)
+	}
+
+	// Every target useless -> hard error with the schema remedy.
+	_, _, err := runGlmErr(t, srv, "", "grep", "C1Repository", "--tables", "incident")
+	if err == nil || !strings.Contains(err.Error(), "glm schema incident") {
+		t.Errorf("grep on a table without the field should fail with a remedy, got: %v", err)
+	}
+}
+
 func TestGrepSince(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)
