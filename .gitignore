@@ -1,0 +1,13 @@
+# Binaries
+glm
+glm.exe
+/dist/
+
+# Test artifacts
+*.test
+coverage.out
+coverage.html
+
+# Local scratch
+*.local.*
+.env
