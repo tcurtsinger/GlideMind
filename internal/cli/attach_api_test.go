@@ -141,6 +141,47 @@ func TestAPINonGetRequiresYes(t *testing.T) {
 	}
 }
 
+func TestAPINestedResultRendersAsJSON(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	// Stats shape {"result":{"stats":{"count":"42"}}} — RecordDetail would
+	// blank the nested map, so it must fall back to complete JSON.
+	stdout, _ := runGlm(t, srv, "", "api", "GET", "/api/now/stats/incident")
+	if !strings.Contains(stdout, `"count":"42"`) {
+		t.Errorf("nested result object must survive verbatim:\n%s", stdout)
+	}
+
+	// Grouped stats: a result array of nested objects — same fallback.
+	stdout, _ = runGlm(t, srv, "", "api", "GET", "/api/now/stats/incident", "-f", "sysparm_group_by=state")
+	if !strings.Contains(stdout, "groupby_fields") || !strings.Contains(stdout, `"count":"5"`) {
+		t.Errorf("nested result array must survive verbatim:\n%s", stdout)
+	}
+}
+
+func TestAPIEmptyResultHonorsMachineFormats(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	// sys_ui_action serves an empty result array.
+	stdout, _ := runGlm(t, srv, "", "api", "GET", "/api/now/table/sys_ui_action", "--format", "ids")
+	if stdout != "" {
+		t.Errorf("ids on an empty result must be an empty stream, got %q", stdout)
+	}
+	stdout, _ = runGlm(t, srv, "", "api", "GET", "/api/now/table/sys_ui_action", "--json")
+	if stdout != "" {
+		t.Errorf("jsonl on an empty result must be an empty stream, got %q", stdout)
+	}
+	stdout, _ = runGlm(t, srv, "", "api", "GET", "/api/now/table/sys_ui_action", "--format", "json")
+	if strings.TrimSpace(stdout) != "[]" {
+		t.Errorf("json on an empty result must be [], got %q", stdout)
+	}
+	stdout, stderr := runGlm(t, srv, "", "api", "GET", "/api/now/table/sys_ui_action", "--format", "table")
+	if stdout != "" || !strings.Contains(stderr, "0 rows") {
+		t.Errorf("empty table output should be silent stdout + 0 rows on stderr, got %q / %q", stdout, stderr)
+	}
+}
+
 func TestAPIRejectsBadInput(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)

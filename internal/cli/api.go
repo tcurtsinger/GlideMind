@@ -113,8 +113,10 @@ func readBodyArg(cmd *cobra.Command, body string) ([]byte, error) {
 }
 
 // renderAPIResponse formats an arbitrary REST response with the shared
-// output machinery: a result array of objects renders like query, a result
-// object renders like get's detail view, anything else prints as JSON.
+// output machinery: a result array of flat objects renders like query, a
+// flat result object renders like get's detail view. Anything the tabular
+// renderers cannot represent faithfully (nested objects, mixed arrays,
+// scalars) prints as JSON so no value is ever dropped.
 func renderAPIResponse(cmd *cobra.Command, data []byte) error {
 	out := cmd.OutOrStdout()
 	if len(bytes.TrimSpace(data)) == 0 {
@@ -141,25 +143,70 @@ func renderAPIResponse(cmd *cobra.Command, data []byte) error {
 
 	switch v := doc.(type) {
 	case []any:
-		if recs, ok := asRecords(v); ok && len(recs) > 0 {
-			if err := output.Records(out, apiFields(recs), recs, output.Options{Format: format}); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "%d rows\n", len(recs))
+		recs, ok := asRecords(v)
+		if !ok || !allFlat(recs) {
+			break
+		}
+		// Empty results still honor the selected machine format — ids and
+		// jsonl pipes get an empty stream, never a literal [].
+		if len(recs) == 0 && (format == "table" || format == "tsv" || format == "csv") {
+			fmt.Fprintln(cmd.ErrOrStderr(), "0 rows")
 			return nil
 		}
+		if err := output.Records(out, apiFields(recs), recs, output.Options{Format: format}); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "%d rows\n", len(recs))
+		return nil
 	case map[string]any:
-		// Single objects default to the detail view, like get.
+		if !flatRecord(v) {
+			break
+		}
+		// Single flat objects default to the detail view, like get.
 		if !explicitFormat {
 			format = "table"
 		}
 		return output.RecordDetail(out, v, nil, output.Options{Format: format})
 	}
 
-	// Scalars, empty or mixed arrays: the JSON itself is the clearest form.
+	// Everything else passes through as JSON — complete, never flattened.
 	enc := json.NewEncoder(out)
 	enc.SetEscapeHTML(false)
 	return enc.Encode(doc)
+}
+
+// flatValue reports whether output.Value renders v faithfully: scalars and
+// the Table API's {display_value, value} reference shape. Anything else
+// (nested objects, arrays) would be blanked or mangled.
+func flatValue(v any) bool {
+	switch m := v.(type) {
+	case nil, string, bool, float64:
+		return true
+	case map[string]any:
+		_, dv := m["display_value"]
+		_, val := m["value"]
+		return dv || val
+	default:
+		return false
+	}
+}
+
+func flatRecord(m map[string]any) bool {
+	for _, v := range m {
+		if !flatValue(v) {
+			return false
+		}
+	}
+	return true
+}
+
+func allFlat(recs []map[string]any) bool {
+	for _, r := range recs {
+		if !flatRecord(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // asRecords narrows []any to records when every element is an object.
