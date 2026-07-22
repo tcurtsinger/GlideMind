@@ -1,16 +1,28 @@
 package snow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/tcurtsinger/GlideMind/internal/exit"
 )
+
+func TestRawRejectsOversizedResponse(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bytes.Repeat([]byte("x"), maxBodyBytes+1)) //nolint:errcheck
+	}))
+	_, err := c.Raw(context.Background(), http.MethodGet, "/api/huge", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "MiB buffer") {
+		t.Errorf("oversized response must error loudly, not truncate, got: %v", err)
+	}
+}
 
 func TestNormalizeInstance(t *testing.T) {
 	cases := []struct {

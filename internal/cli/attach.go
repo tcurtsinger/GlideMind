@@ -146,17 +146,23 @@ func newAttachGetCmd() *cobra.Command {
 				target = filepath.Join(target, name)
 			}
 
-			f, err := os.Create(target)
+			// Download into a sibling temp file and rename only on success —
+			// a failed download must never truncate an existing target.
+			f, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".glm*")
 			if err != nil {
 				return err
 			}
+			tmp := f.Name()
 			n, err := client.DownloadAttachment(ctx, id, f)
-			cerr := f.Close()
-			if err != nil {
-				return err
+			if cerr := f.Close(); err == nil {
+				err = cerr
 			}
-			if cerr != nil {
-				return cerr
+			if err == nil {
+				err = os.Rename(tmp, target)
+			}
+			if err != nil {
+				os.Remove(tmp) //nolint:errcheck
+				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), target)
 			summary(n)

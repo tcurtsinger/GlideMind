@@ -185,13 +185,20 @@ func (c *Client) Raw(ctx context.Context, method, path string, query url.Values,
 				return nil, &NetworkError{Err: ctx.Err()}
 			}
 		}
-		data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+		// Read one byte past the cap so truncation is detected, never silent.
+		data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
 		resp.Body.Close()
 		if err != nil {
 			return nil, &NetworkError{Err: err}
 		}
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			if len(data) > maxBodyBytes {
+				data = data[:maxBodyBytes]
+			}
 			return nil, apiError(resp.StatusCode, data)
+		}
+		if len(data) > maxBodyBytes {
+			return nil, fmt.Errorf("response exceeds glm's %d MiB buffer - narrow the request (sysparm_limit, pagination, or a more specific endpoint)", maxBodyBytes>>20)
 		}
 		return data, nil
 	}
@@ -361,17 +368,24 @@ func retryDelay(resp *http.Response, attempt int) time.Duration {
 
 func decodeResponse(resp *http.Response, out any) error {
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	// Read one byte past the cap so truncation is detected, never silent.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
 	if err != nil {
 		return &NetworkError{Err: err}
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		if len(body) > maxBodyBytes {
+			body = body[:maxBodyBytes]
+		}
 		return apiError(resp.StatusCode, body)
 	}
 
 	if out == nil {
 		return nil
+	}
+	if len(body) > maxBodyBytes {
+		return fmt.Errorf("response exceeds glm's %d MiB buffer - lower --limit or request fewer fields", maxBodyBytes>>20)
 	}
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decode response: %w", err)

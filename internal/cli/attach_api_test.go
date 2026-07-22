@@ -75,6 +75,28 @@ func TestAttachGetDownloads(t *testing.T) {
 	}
 }
 
+func TestAttachGetFailedDownloadPreservesTarget(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "keep.log")
+	if err := os.WriteFile(dest, []byte("precious"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runGlmErr(t, srv, "", "attach", "get", sysIDd, "-o", dest); err == nil {
+		t.Fatal("download of the broken attachment should fail")
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil || string(got) != "precious" {
+		t.Errorf("failed download must not clobber the target, got %q, %v", got, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Errorf("temp file left behind after failure: %v", entries)
+	}
+}
+
 func TestAPIGetRendersResultArray(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)

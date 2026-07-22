@@ -146,12 +146,23 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 	})
 	mux.HandleFunc("/api/now/attachment/", func(w http.ResponseWriter, r *http.Request) {
 		bump("attach")
+		// sysIDd is the attachment whose download always fails.
+		broken := strings.Contains(r.URL.Path, sysIDd)
 		if strings.HasSuffix(r.URL.Path, "/file") {
+			if broken {
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte(`{"error":{"message":"attachment storage offline"}}`)) //nolint:errcheck
+				return
+			}
 			w.Write([]byte("log line 1\nlog line 2\n")) //nolint:errcheck
 			return
 		}
+		name := "error.log"
+		if broken {
+			name = "broken.log"
+		}
 		writeResult(w, map[string]any{
-			"sys_id": sysIDc, "file_name": "error.log", "size_bytes": "22", "content_type": "text/plain",
+			"sys_id": sysIDc, "file_name": name, "size_bytes": "22", "content_type": "text/plain",
 		})
 	})
 	mux.HandleFunc("/api/now/table/incident/", func(w http.ResponseWriter, r *http.Request) {
