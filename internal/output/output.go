@@ -184,30 +184,46 @@ func writeJSON(w io.Writer, fields []string, recs []map[string]any, opts Options
 	return nil
 }
 
-// RecordDetail renders a single record: non-empty fields only (empty-field
-// omission is a large share of the token win on wide tables), regular fields
-// before sys_* bookkeeping, values soft-capped unless --full. csv/tsv render
-// a parseable header + one row instead of the key/value view.
-func RecordDetail(w io.Writer, rec map[string]any, opts Options) error {
+// RecordDetail renders a single record. With nil fields, columns are derived
+// from the record: non-empty only (empty-field omission is a large share of
+// the token win on wide tables), regular fields before sys_* bookkeeping.
+// Explicitly requested fields render exactly as asked — same names, same
+// order, empties included — the stable schema scripts depend on. csv/tsv
+// produce a parseable header + one row instead of the key/value view.
+func RecordDetail(w io.Writer, rec map[string]any, fields []string, opts Options) error {
+	explicit := len(fields) > 0
+	if !explicit {
+		fields = detailFields(rec)
+	}
+
 	switch opts.Format {
 	case "ids":
 		fmt.Fprintln(w, Value(rec, "sys_id"))
 		return nil
 	case "json", "jsonl":
 		obj := map[string]string{}
-		for k := range rec {
-			if v := Value(rec, k); v != "" {
-				obj[k] = TruncateField(v, opts.Full)
+		if explicit {
+			for _, k := range fields {
+				obj[k] = TruncateField(Value(rec, k), opts.Full)
+			}
+			// Machine formats always carry sys_id for chaining.
+			if id := Value(rec, "sys_id"); id != "" {
+				obj["sys_id"] = id
+			}
+		} else {
+			for k := range rec {
+				if v := Value(rec, k); v != "" {
+					obj[k] = TruncateField(v, opts.Full)
+				}
 			}
 		}
 		enc := json.NewEncoder(w)
 		enc.SetEscapeHTML(false)
 		return enc.Encode(obj)
 	case "csv", "tsv":
-		return Records(w, detailFields(rec), []map[string]any{rec}, opts)
+		return Records(w, fields, []map[string]any{rec}, opts)
 	}
 
-	fields := detailFields(rec)
 	width := 0
 	for _, k := range fields {
 		if n := utf8.RuneCountInString(k); n > width {

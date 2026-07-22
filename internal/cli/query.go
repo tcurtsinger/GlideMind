@@ -197,23 +197,36 @@ func resolveFormat(cmd *cobra.Command) (string, bool, error) {
 
 // emitPageMeta writes the pagination summary to stderr: pipes stay clean,
 // and both humans and agents see how to get the rest (DESIGN.md §7).
+// Windows always advance by limit, never by visible rows: sysparm_limit is
+// applied BEFORE ACL evaluation, so a short (even empty) window does not
+// mean the query is exhausted, and offset+got could re-issue the same
+// window forever.
 func emitPageMeta(w io.Writer, offset, got, total, limit int) {
+	next := offset + limit
+	// With a known total, more windows exist while next < total (ACLs can
+	// empty any window without exhausting the query). With an unknown total,
+	// only a non-empty window suggests continuing — an empty one is the stop
+	// signal, never a hint pointing at itself.
+	hasMore := next < total
+	if total < 0 {
+		hasMore = got > 0
+	}
+
+	var line string
 	switch {
 	case got == 0 && offset == 0:
-		fmt.Fprintln(w, "no rows")
+		line = "no rows"
+	case got == 0:
+		line = "no rows in this window"
 	case total >= 0:
-		line := fmt.Sprintf("rows %d-%d of %d", offset+1, offset+got, total)
-		if offset+got < total {
-			line += fmt.Sprintf(" - next: --offset %d", offset+got)
-		}
-		fmt.Fprintln(w, line)
+		line = fmt.Sprintf("rows %d-%d of %d", offset+1, offset+got, total)
 	default:
-		line := fmt.Sprintf("rows %d-%d", offset+1, offset+got)
-		if got == limit {
-			line += fmt.Sprintf(" - more may exist - next: --offset %d", offset+got)
-		}
-		fmt.Fprintln(w, line)
+		line = fmt.Sprintf("rows %d-%d - more may exist", offset+1, offset+got)
 	}
+	if hasMore {
+		line += fmt.Sprintf(" - next: --offset %d", next)
+	}
+	fmt.Fprintln(w, line)
 }
 
 func displayValue(raw bool) string {

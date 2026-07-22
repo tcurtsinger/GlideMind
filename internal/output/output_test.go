@@ -105,7 +105,7 @@ func TestRecordDetailOmitsEmptyAndGroupsSysFields(t *testing.T) {
 		"sys_mod_count": "4",
 	}
 	var buf bytes.Buffer
-	if err := RecordDetail(&buf, rec, Options{Format: "table"}); err != nil {
+	if err := RecordDetail(&buf, rec, nil, Options{Format: "table"}); err != nil {
 		t.Fatalf("detail: %v", err)
 	}
 	got := buf.String()
@@ -127,7 +127,7 @@ func TestRecordDetailDelimitedFormats(t *testing.T) {
 		"sys_id":    "abc",
 	}
 	var buf bytes.Buffer
-	if err := RecordDetail(&buf, rec, Options{Format: "tsv"}); err != nil {
+	if err := RecordDetail(&buf, rec, nil, Options{Format: "tsv"}); err != nil {
 		t.Fatalf("detail tsv: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
@@ -142,11 +142,37 @@ func TestRecordDetailDelimitedFormats(t *testing.T) {
 	}
 
 	buf.Reset()
-	if err := RecordDetail(&buf, rec, Options{Format: "csv"}); err != nil {
+	if err := RecordDetail(&buf, rec, nil, Options{Format: "csv"}); err != nil {
 		t.Fatalf("detail csv: %v", err)
 	}
 	if !strings.HasPrefix(buf.String(), "number,state,sys_id\n") {
 		t.Errorf("csv detail header wrong:\n%s", buf.String())
+	}
+}
+
+func TestRecordDetailExplicitFieldsExactSchema(t *testing.T) {
+	rec := map[string]any{
+		"number": "INC0000001", "state": "In Progress", "note": "", "sys_id": "abc",
+	}
+	var buf bytes.Buffer
+	if err := RecordDetail(&buf, rec, []string{"number", "note"}, Options{Format: "tsv"}); err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if lines[0] != "number\tnote" {
+		t.Errorf("explicit fields must define the schema exactly (no sys_id, requested order): %q", lines[0])
+	}
+	if lines[1] != "INC0000001\t" {
+		t.Errorf("explicitly requested empty fields stay as empty cells: %q", lines[1])
+	}
+
+	// json keeps sys_id for chaining even with explicit fields.
+	buf.Reset()
+	if err := RecordDetail(&buf, rec, []string{"number"}, Options{Format: "jsonl"}); err != nil {
+		t.Fatalf("detail jsonl: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"sys_id":"abc"`) {
+		t.Errorf("machine formats must keep sys_id: %s", buf.String())
 	}
 }
 

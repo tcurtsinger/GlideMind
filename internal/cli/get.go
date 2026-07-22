@@ -75,7 +75,7 @@ func newGetCmd() *cobra.Command {
 					if err != nil {
 						return fmt.Errorf("key %q: %w", k, err)
 					}
-					if err := output.RecordDetail(cmd.OutOrStdout(), rec, opts); err != nil {
+					if err := output.RecordDetail(cmd.OutOrStdout(), rec, explicit, opts); err != nil {
 						return err
 					}
 				}
@@ -103,7 +103,7 @@ func newGetCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), output.TruncateField(output.Value(rec, explicit[0]), full))
 				return nil
 			}
-			return output.RecordDetail(cmd.OutOrStdout(), rec, output.Options{Format: format, Full: full})
+			return output.RecordDetail(cmd.OutOrStdout(), rec, explicit, output.Options{Format: format, Full: full})
 		},
 	}
 	cmd.Flags().StringVar(&fields, "fields", "", "comma-separated fields (default: all non-empty)")

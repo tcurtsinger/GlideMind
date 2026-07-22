@@ -250,6 +250,49 @@ func TestCountPrintsBareNumber(t *testing.T) {
 	}
 }
 
+func TestGetExplicitFieldsDelimitedSchema(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	stdout, _ := runGlm(t, srv, "", "get", "incident", sysIDa, "--fields", "number,short_description", "--format", "tsv")
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if lines[0] != "number\tshort_description" {
+		t.Errorf("delimited get must honor the requested field list exactly, got header %q", lines[0])
+	}
+	if strings.Contains(stdout, sysIDa) {
+		t.Errorf("sys_id must not leak into delimited output unless requested:\n%s", stdout)
+	}
+}
+
+func TestEmitPageMeta(t *testing.T) {
+	cases := []struct {
+		offset, got, total, limit int
+		want                      string
+	}{
+		{0, 2, 47, 2, "rows 1-2 of 47 - next: --offset 2"},
+		// ACL-shrunk window: advance by limit, not by visible rows.
+		{0, 2, 47, 5, "rows 1-2 of 47 - next: --offset 5"},
+		{45, 2, 47, 5, "rows 46-47 of 47"},
+		{0, 0, 0, 25, "no rows"},
+		// Fully ACL-hidden first window with a known total still advances.
+		{0, 0, 47, 25, "no rows - next: --offset 25"},
+		// Empty final window: next would pass the total, so no hint.
+		{25, 0, 47, 25, "no rows in this window"},
+		// Empty window with unknown total must NOT hint at itself.
+		{25, 0, -1, 25, "no rows in this window"},
+		{0, 25, -1, 25, "rows 1-25 - more may exist - next: --offset 25"},
+		{0, 3, -1, 25, "rows 1-3 - more may exist - next: --offset 25"},
+	}
+	for _, tc := range cases {
+		var buf bytes.Buffer
+		emitPageMeta(&buf, tc.offset, tc.got, tc.total, tc.limit)
+		if got := strings.TrimRight(buf.String(), "\n"); got != tc.want {
+			t.Errorf("emitPageMeta(offset=%d, got=%d, total=%d, limit=%d) = %q, want %q",
+				tc.offset, tc.got, tc.total, tc.limit, got, tc.want)
+		}
+	}
+}
+
 func TestParseSince(t *testing.T) {
 	cases := map[string]int{"15m": 15, "2h": 120, "3d": 4320, "90s": 2}
 	for in, want := range cases {
