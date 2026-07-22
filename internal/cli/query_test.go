@@ -147,6 +147,9 @@ func TestQueryIDsFormat(t *testing.T) {
 	if stdout != sysIDa+"\n"+sysIDb+"\n" {
 		t.Errorf("ids output = %q", stdout)
 	}
+	if hits["schema"] != 0 {
+		t.Errorf("ids format must not trigger schema lookups (got %d)", hits["schema"])
+	}
 }
 
 func TestQueryExplicitFieldsSkipSchema(t *testing.T) {

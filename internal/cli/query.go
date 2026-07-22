@@ -61,11 +61,18 @@ func newQueryCmd() *cobra.Command {
 
 			fields := splitFields(o.fields)
 			if len(fields) == 0 {
-				meta, err := schema.Fetch(ctx, client, table)
-				if err != nil {
-					return err
+				if format == "ids" {
+					// The ids renderer only needs sys_id — skip schema
+					// derivation entirely (no dictionary ACL dependency,
+					// no unused columns fetched).
+					fields = []string{"sys_id"}
+				} else {
+					meta, err := schema.Fetch(ctx, client, table)
+					if err != nil {
+						return err
+					}
+					fields = meta.DefaultFields()
 				}
-				fields = meta.DefaultFields()
 			}
 
 			// Machine formats always carry sys_id for chaining; tabular
