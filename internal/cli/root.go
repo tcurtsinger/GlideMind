@@ -66,6 +66,9 @@ func newRootCmd() *cobra.Command {
 	pf.BoolP("verbose", "v", false, "verbose diagnostics on stderr")
 
 	cmd.AddCommand(
+		newQueryCmd(),
+		newGetCmd(),
+		newCountCmd(),
 		newWhoamiCmd(),
 		newProfileCmd(),
 	)
