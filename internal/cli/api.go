@@ -24,7 +24,7 @@ var apiMethods = map[string]bool{
 func newAPICmd() *cobra.Command {
 	var params []string
 	var body string
-	var yes bool
+	var yes, full bool
 
 	cmd := &cobra.Command{
 		Use:   "api <METHOD> <path>",
@@ -89,12 +89,13 @@ func newAPICmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return renderAPIResponse(cmd, data)
+			return renderAPIResponse(cmd, data, full)
 		},
 	}
 	cmd.Flags().StringArrayVarP(&params, "param", "f", nil, "query parameter k=v (repeatable)")
 	cmd.Flags().StringVar(&body, "body", "", "JSON request body (@file reads a file, @- reads stdin)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm executing a non-GET request")
+	cmd.Flags().BoolVar(&full, "full", false, "no truncation of long values")
 	return cmd
 }
 
@@ -117,7 +118,7 @@ func readBodyArg(cmd *cobra.Command, body string) ([]byte, error) {
 // flat result object renders like get's detail view. Anything the tabular
 // renderers cannot represent faithfully (nested objects, mixed arrays,
 // scalars) prints as JSON so no value is ever dropped.
-func renderAPIResponse(cmd *cobra.Command, data []byte) error {
+func renderAPIResponse(cmd *cobra.Command, data []byte, full bool) error {
 	out := cmd.OutOrStdout()
 	if len(bytes.TrimSpace(data)) == 0 {
 		fmt.Fprintln(cmd.ErrOrStderr(), "(empty response)")
@@ -153,7 +154,7 @@ func renderAPIResponse(cmd *cobra.Command, data []byte) error {
 			fmt.Fprintln(cmd.ErrOrStderr(), "0 rows")
 			return nil
 		}
-		if err := output.Records(out, apiFields(recs), recs, output.Options{Format: format}); err != nil {
+		if err := output.Records(out, apiFields(recs), recs, output.Options{Format: format, Full: full}); err != nil {
 			return err
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "%d rows\n", len(recs))
@@ -166,12 +167,21 @@ func renderAPIResponse(cmd *cobra.Command, data []byte) error {
 		if !explicitFormat {
 			format = "table"
 		}
-		return output.RecordDetail(out, v, nil, output.Options{Format: format})
+		return output.RecordDetail(out, v, nil, output.Options{Format: format, Full: full})
 	}
 
 	// Everything else passes through as JSON — complete, never flattened.
 	enc := json.NewEncoder(out)
 	enc.SetEscapeHTML(false)
+	// jsonl keeps its one-object-per-line contract even for nested arrays.
+	if arr, ok := doc.([]any); ok && format == "jsonl" {
+		for _, el := range arr {
+			if err := enc.Encode(el); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	return enc.Encode(doc)
 }
 

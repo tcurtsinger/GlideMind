@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,20 @@ func TestAttachListBySysIDAndByNumber(t *testing.T) {
 	want := sysIDc + "\n" + sysIDd + "\n"
 	if stdout != want {
 		t.Errorf("ids format = %q, want %q", stdout, want)
+	}
+}
+
+func TestAttachListOffsetPaginates(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	_, stderr := runGlm(t, srv, "", "attach", "list", "incident", sysIDa, "--offset", "1")
+	if hits["attach-offset-1"] != 1 {
+		t.Errorf("--offset must reach the query as sysparm_offset: %v", hits)
+	}
+	// The hint the summary prints must name a flag that actually exists.
+	if !strings.Contains(stderr, "rows 2-3") || !strings.Contains(stderr, "next: --offset 26") {
+		t.Errorf("pagination summary should reflect the offset window: %q", stderr)
 	}
 }
 
@@ -156,6 +171,38 @@ func TestAPINestedResultRendersAsJSON(t *testing.T) {
 	stdout, _ = runGlm(t, srv, "", "api", "GET", "/api/now/stats/incident", "-f", "sysparm_group_by=state")
 	if !strings.Contains(stdout, "groupby_fields") || !strings.Contains(stdout, `"count":"5"`) {
 		t.Errorf("nested result array must survive verbatim:\n%s", stdout)
+	}
+}
+
+func TestAPIFullLiftsTruncation(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+	long := strings.Repeat("x", 2500)
+
+	stdout, _ := runGlm(t, srv, "", "api", "GET", "/api/now/table/long_story", "--json")
+	if strings.Contains(stdout, long) || !strings.Contains(stdout, "use --full") {
+		t.Errorf("default output should truncate with the --full remedy:\n%.200s", stdout)
+	}
+	stdout, _ = runGlm(t, srv, "", "api", "GET", "/api/now/table/long_story", "--json", "--full")
+	if !strings.Contains(stdout, long) {
+		t.Errorf("--full must lift truncation:\n%.200s", stdout)
+	}
+}
+
+func TestAPINestedArrayHonorsJSONL(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	stdout, _ := runGlm(t, srv, "", "api", "GET", "/api/now/stats/incident", "-f", "sysparm_group_by=state", "--json")
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("jsonl must emit one object per element, got %d lines:\n%s", len(lines), stdout)
+	}
+	for _, line := range lines {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Errorf("line is not a JSON object: %v (%s)", err, line)
+		}
 	}
 }
 

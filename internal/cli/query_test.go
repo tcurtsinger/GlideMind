@@ -135,6 +135,9 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 	})
 	mux.HandleFunc("/api/now/table/sys_attachment", func(w http.ResponseWriter, r *http.Request) {
 		bump("attach")
+		if v := r.URL.Query().Get("sysparm_offset"); v != "" {
+			bump("attach-offset-" + v)
+		}
 		if r.URL.Query().Get("sysparm_query") != "table_name=incident^table_sys_id="+sysIDa+"^ORDERBYfile_name" {
 			writeResult(w, []map[string]any{})
 			return
@@ -143,6 +146,10 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 			{"sys_id": sysIDc, "file_name": "error.log", "size_bytes": "22", "content_type": "text/plain", "sys_updated_on": "2026-07-22 04:00:00"},
 			{"sys_id": sysIDd, "file_name": "screenshot.png", "size_bytes": "34518", "content_type": "image/png", "sys_updated_on": "2026-07-22 04:00:00"},
 		})
+	})
+	mux.HandleFunc("/api/now/table/long_story", func(w http.ResponseWriter, r *http.Request) {
+		bump("list")
+		writeResult(w, []map[string]any{{"sys_id": sysIDa, "tale": strings.Repeat("x", 2500)}})
 	})
 	mux.HandleFunc("/api/now/attachment/", func(w http.ResponseWriter, r *http.Request) {
 		bump("attach")

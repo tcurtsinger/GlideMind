@@ -27,7 +27,7 @@ func newAttachCmd() *cobra.Command {
 }
 
 func newAttachListCmd() *cobra.Command {
-	var limit int
+	var limit, offset int
 
 	cmd := &cobra.Command{
 		Use:   "list <table> <sys_id|number|display-value>",
@@ -66,6 +66,9 @@ func newAttachListCmd() *cobra.Command {
 			q.Set("sysparm_query", "table_name="+table+"^table_sys_id="+sysID+"^ORDERBYfile_name")
 			q.Set("sysparm_fields", strings.Join(attachFields, ","))
 			q.Set("sysparm_limit", strconv.Itoa(limit))
+			if offset > 0 {
+				q.Set("sysparm_offset", strconv.Itoa(offset))
+			}
 			q.Set("sysparm_display_value", "false")
 			q.Set("sysparm_exclude_reference_link", "true")
 			records, total, err := client.TablePage(ctx, "sys_attachment", q)
@@ -80,11 +83,12 @@ func newAttachListCmd() *cobra.Command {
 			if err := output.Records(cmd.OutOrStdout(), attachFields, records, output.Options{Format: format}); err != nil {
 				return err
 			}
-			emitPageMeta(cmd.ErrOrStderr(), 0, len(records), total, limit)
+			emitPageMeta(cmd.ErrOrStderr(), offset, len(records), total, limit)
 			return nil
 		},
 	}
 	cmd.Flags().IntVar(&limit, "limit", 25, "max attachments to list")
+	cmd.Flags().IntVar(&offset, "offset", 0, "row offset for pagination")
 	return cmd
 }
 
