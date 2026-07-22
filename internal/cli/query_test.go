@@ -391,6 +391,35 @@ func TestGrepJSONL(t *testing.T) {
 	}
 }
 
+func TestCaretValuesRejected(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	if _, _, err := runGlmErr(t, srv, "", "grep", "active=true^priority=1"); err == nil || !strings.Contains(err.Error(), "encoded-query separator") {
+		t.Errorf("grep pattern with ^ should be rejected, got: %v", err)
+	}
+	if _, _, err := runGlmErr(t, srv, "", "tables", "a^b"); err == nil || !strings.Contains(err.Error(), "encoded-query separator") {
+		t.Errorf("tables pattern with ^ should be rejected, got: %v", err)
+	}
+	if _, _, err := runGlmErr(t, srv, "", "get", "incident", "a^b"); err == nil || !strings.Contains(err.Error(), "sys_id") {
+		t.Errorf("get key with ^ should be rejected with sys_id remedy, got: %v", err)
+	}
+}
+
+func TestGrepFormatJSONIsSingleDocument(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	stdout, _ := runGlm(t, srv, "", "grep", "C1Repository", "--format", "json")
+	var objs []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &objs); err != nil {
+		t.Fatalf("--format json must be one JSON document: %v\n%s", err, stdout)
+	}
+	if len(objs) != 6 {
+		t.Errorf("want 6 match objects, got %d", len(objs))
+	}
+}
+
 func TestCountPrintsBareNumber(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)

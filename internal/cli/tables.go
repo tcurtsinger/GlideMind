@@ -27,6 +27,9 @@ func newTablesCmd() *cobra.Command {
 			clauses := []string{}
 			if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
 				p := strings.TrimSpace(args[0])
+				if err := encodedQueryValue("pattern", p); err != nil {
+					return err
+				}
 				clauses = append(clauses, "nameLIKE"+p+"^ORlabelLIKE"+p)
 			}
 			clauses = append(clauses, "ORDERBYname")

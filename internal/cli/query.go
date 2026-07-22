@@ -257,6 +257,16 @@ func displayValue(raw bool) string {
 	return "true"
 }
 
+// encodedQueryValue rejects values that would break out of an encoded-query
+// clause — ^ is the clause separator and ServiceNow has no in-value escape
+// for it, so a caret would inject query logic or silently miss matches.
+func encodedQueryValue(kind, v string) error {
+	if strings.Contains(v, "^") {
+		return fmt.Errorf(`%s contains "^", the encoded-query separator, which cannot be matched server-side — narrow it to a fragment without "^"`, kind)
+	}
+	return nil
+}
+
 func splitFields(s string) []string {
 	if strings.TrimSpace(s) == "" {
 		return nil

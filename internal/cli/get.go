@@ -130,6 +130,10 @@ func newRecordFetcher(client *snow.Client, store *schema.Store, table string, ba
 		if sysIDPattern.MatchString(key) {
 			return client.GetRecord(ctx, table, key, baseQuery)
 		}
+		// Lookup keys become encoded-query values; ^ has no in-value escape.
+		if strings.Contains(key, "^") {
+			return nil, fmt.Errorf(`lookup keys cannot contain "^" — use the record's sys_id instead`)
+		}
 
 		if meta == nil {
 			m, err := store.Get(ctx, table)

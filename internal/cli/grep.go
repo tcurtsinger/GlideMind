@@ -59,6 +59,12 @@ func newGrepCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pattern := args[0]
+			if err := encodedQueryValue("pattern", pattern); err != nil {
+				return err
+			}
+			if err := encodedQueryValue("--scope", scope); err != nil {
+				return err
+			}
 			client, _, err := clientFor(cmd, "")
 			if err != nil {
 				return err
@@ -149,15 +155,26 @@ func newGrepCmd() *cobra.Command {
 					fmt.Fprintln(out, m.sysID)
 				}
 			case "json", "jsonl":
-				enc := json.NewEncoder(out)
-				enc.SetEscapeHTML(false)
+				objs := make([]map[string]any, 0, len(matches))
 				for _, m := range matches {
 					for _, l := range m.lines {
 						lineCount++
-						if err := enc.Encode(map[string]any{
+						objs = append(objs, map[string]any{
 							"table": m.target.table, "sys_id": m.sysID, "name": m.name,
 							"line": l.number, "text": l.text,
-						}); err != nil {
+						})
+					}
+				}
+				enc := json.NewEncoder(out)
+				enc.SetEscapeHTML(false)
+				// json is one document (an array); jsonl is one object per line.
+				if format == "json" {
+					if err := enc.Encode(objs); err != nil {
+						return err
+					}
+				} else {
+					for _, obj := range objs {
+						if err := enc.Encode(obj); err != nil {
 							return err
 						}
 					}
