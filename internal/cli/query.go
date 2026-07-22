@@ -59,6 +59,8 @@ func newQueryCmd() *cobra.Command {
 				return err
 			}
 
+			store := schemaStore(client)
+			var meta *schema.TableMeta
 			fields := splitFields(o.fields)
 			if len(fields) == 0 {
 				if format == "ids" {
@@ -67,11 +69,30 @@ func newQueryCmd() *cobra.Command {
 					// no unused columns fetched).
 					fields = []string{"sys_id"}
 				} else {
-					meta, err := schema.Fetch(ctx, client, table)
+					meta, err = store.Get(ctx, table)
 					if err != nil {
 						return err
 					}
 					fields = meta.DefaultFields()
+				}
+			}
+
+			// Pre-flight validation: catch typo'd fields before the request
+			// (the SN API silently returns empty strings for unknown ones).
+			// Strictly cache/no-network beyond what this command already
+			// fetched — validation never adds API calls and never blocks a
+			// query on instances without dictionary access.
+			if meta == nil {
+				meta = store.GetCached(table)
+			}
+			if meta != nil {
+				names := append([]string{}, splitFields(o.fields)...)
+				if o.orderBy != "" {
+					names = append(names, strings.TrimPrefix(o.orderBy, "-"))
+				}
+				names = append(names, schema.ExtractQueryFields(encoded)...)
+				if err := meta.Validate(names); err != nil {
+					return err
 				}
 			}
 

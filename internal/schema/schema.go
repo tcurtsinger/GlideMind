@@ -32,6 +32,7 @@ func (e *NotFoundError) ExitCode() int { return exit.NotFound }
 type Field struct {
 	Type      string
 	Reference string // referenced table, when Type is "reference"
+	Mandatory bool
 }
 
 // TableMeta is the derived metadata for one table, fields inherited included.
@@ -72,7 +73,7 @@ func Fetch(ctx context.Context, c *snow.Client, table string) (*TableMeta, error
 
 	q := url.Values{}
 	q.Set("sysparm_query", "nameIN"+strings.Join(chain, ",")+"^elementISNOTEMPTY")
-	q.Set("sysparm_fields", "name,element,internal_type,display,reference.name")
+	q.Set("sysparm_fields", "name,element,internal_type,display,reference.name,mandatory")
 	q.Set("sysparm_limit", "2000")
 	q.Set("sysparm_display_value", "false")
 	q.Set("sysparm_exclude_reference_link", "true")
@@ -94,6 +95,7 @@ func Fetch(ctx context.Context, c *snow.Client, table string) (*TableMeta, error
 			meta.Fields[element] = Field{
 				Type:      value(r, "internal_type"),
 				Reference: value(r, "reference.name"),
+				Mandatory: value(r, "mandatory") == "true",
 			}
 		}
 		if value(r, "display") == "true" {

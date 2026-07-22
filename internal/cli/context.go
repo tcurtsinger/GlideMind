@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tcurtsinger/GlideMind/internal/config"
+	"github.com/tcurtsinger/GlideMind/internal/schema"
 	"github.com/tcurtsinger/GlideMind/internal/secret"
 	"github.com/tcurtsinger/GlideMind/internal/snow"
 )
@@ -44,4 +45,14 @@ func clientFor(cmd *cobra.Command, flagName string) (*snow.Client, *config.Resol
 		})
 	}
 	return client, res, nil
+}
+
+// schemaStore builds the per-instance schema cache; when no cache dir is
+// available it degrades to live lookups (Dir == "").
+func schemaStore(client *snow.Client) *schema.Store {
+	store, err := schema.NewStore(client)
+	if err != nil {
+		return &schema.Store{Client: client}
+	}
+	return store
 }

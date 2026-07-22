@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/tcurtsinger/GlideMind/internal/schema"
 )
 
 func newCountCmd() *cobra.Command {
@@ -22,6 +24,12 @@ func newCountCmd() *cobra.Command {
 			encoded, err := buildEncodedQuery(&o, false)
 			if err != nil {
 				return err
+			}
+			// Cache-only typo check on query fields; never an extra call.
+			if meta := schemaStore(client).GetCached(args[0]); meta != nil {
+				if err := meta.Validate(schema.ExtractQueryFields(encoded)); err != nil {
+					return err
+				}
 			}
 			n, err := client.Count(cmd.Context(), args[0], encoded)
 			if err != nil {

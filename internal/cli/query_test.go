@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/tcurtsinger/GlideMind/internal/config"
+	"github.com/tcurtsinger/GlideMind/internal/schema"
 	"github.com/tcurtsinger/GlideMind/internal/secret"
 )
 
@@ -40,6 +42,8 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 		q := r.URL.Query().Get("sysparm_query")
 		var rows []map[string]any
 		switch {
+		case strings.Contains(q, "LIKE"):
+			rows = []map[string]any{{"name": "incident", "label": "Incident", "super_class": "Task", "sys_id": sysIDa}}
 		case strings.Contains(q, "name=incident"):
 			rows = []map[string]any{{"name": "incident", "super_class.name": "task"}}
 		case strings.Contains(q, "name=task"):
@@ -51,7 +55,7 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 		hits["schema"]++
 		writeResult(w, []map[string]any{
 			{"name": "task", "element": "number", "internal_type": "string", "display": "true", "reference.name": ""},
-			{"name": "task", "element": "short_description", "internal_type": "string", "display": "false", "reference.name": ""},
+			{"name": "task", "element": "short_description", "internal_type": "string", "display": "false", "reference.name": "", "mandatory": "true"},
 			{"name": "task", "element": "assigned_to", "internal_type": "reference", "display": "false", "reference.name": "sys_user"},
 			{"name": "task", "element": "active", "internal_type": "boolean", "display": "false", "reference.name": ""},
 			{"name": "task", "element": "sys_updated_on", "internal_type": "glide_date_time", "display": "false", "reference.name": ""},
@@ -88,10 +92,32 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 	return srv
 }
 
+// isolateCache points the schema cache at a per-test temp dir, stable across
+// runGlm calls within one test so cache-warming scenarios work.
+func isolateCache(t *testing.T) {
+	t.Helper()
+	if os.Getenv("GLM_TEST_CACHE_OWNER") == t.Name() {
+		return
+	}
+	t.Setenv(schema.EnvCacheDir, t.TempDir())
+	t.Setenv("GLM_TEST_CACHE_OWNER", t.Name())
+}
+
 // runGlm executes the real command tree against the fake instance using pure
-// env config, returning stdout and stderr.
+// env config, returning stdout and stderr; failures are fatal.
 func runGlm(t *testing.T, srv *httptest.Server, stdin string, args ...string) (string, string) {
 	t.Helper()
+	stdout, stderr, err := runGlmErr(t, srv, stdin, args...)
+	if err != nil {
+		t.Fatalf("glm %v: %v (stderr: %s)", args, err, stderr)
+	}
+	return stdout, stderr
+}
+
+// runGlmErr is runGlm for scenarios where the command is expected to fail.
+func runGlmErr(t *testing.T, srv *httptest.Server, stdin string, args ...string) (string, string, error) {
+	t.Helper()
+	isolateCache(t)
 	t.Setenv(config.EnvProfile, "")
 	t.Setenv(config.EnvInstance, srv.URL)
 	t.Setenv(config.EnvUsername, "svc.glm")
@@ -105,10 +131,8 @@ func runGlm(t *testing.T, srv *httptest.Server, stdin string, args ...string) (s
 		root.SetIn(strings.NewReader(stdin))
 	}
 	root.SetArgs(args)
-	if err := root.Execute(); err != nil {
-		t.Fatalf("glm %v: %v (stderr: %s)", args, err, errOut.String())
-	}
-	return out.String(), errOut.String()
+	err := root.Execute()
+	return out.String(), errOut.String(), err
 }
 
 func TestQueryZeroConfigDefaults(t *testing.T) {
@@ -261,6 +285,96 @@ func TestGetExplicitFieldsDelimitedSchema(t *testing.T) {
 	}
 	if strings.Contains(stdout, sysIDa) {
 		t.Errorf("sys_id must not leak into delimited output unless requested:\n%s", stdout)
+	}
+}
+
+func TestQueryFieldTypoDidYouMean(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	runGlm(t, srv, "", "query", "incident") // warms the schema cache
+	_, _, err := runGlmErr(t, srv, "", "query", "incident", "--fields", "priorty")
+	if err == nil {
+		t.Fatal("typo'd field should fail pre-flight")
+	}
+	if !strings.Contains(err.Error(), `"priority"`) || !strings.Contains(err.Error(), "glm schema incident") {
+		t.Errorf("want did-you-mean with remedy, got: %v", err)
+	}
+}
+
+func TestQueryEncodedClauseTypo(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	runGlm(t, srv, "", "query", "incident")
+	_, _, err := runGlmErr(t, srv, "", "query", "incident", "-q", "stat=1")
+	if err == nil {
+		t.Fatal("typo'd query field should fail pre-flight")
+	}
+	if !strings.Contains(err.Error(), `"state"`) {
+		t.Errorf("want state suggestion, got: %v", err)
+	}
+}
+
+func TestQueryValidationColdCacheNeverBlocks(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	// Cold cache: no validation, no schema calls — the typo goes through to
+	// the instance rather than blocking or costing extra requests.
+	stdout, _ := runGlm(t, srv, "", "query", "incident", "--fields", "priorty")
+	if hits["schema"] != 0 {
+		t.Errorf("cold-cache validation must not trigger schema calls (got %d)", hits["schema"])
+	}
+	if stdout == "" {
+		t.Error("query should still have executed")
+	}
+}
+
+func TestGetFieldTypoDidYouMean(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	runGlm(t, srv, "", "query", "incident") // warm cache
+	_, _, err := runGlmErr(t, srv, "", "get", "incident", sysIDa, "--fields", "nmber")
+	if err == nil {
+		t.Fatal("typo'd get field should fail pre-flight")
+	}
+	if !strings.Contains(err.Error(), `"number"`) {
+		t.Errorf("want number suggestion, got: %v", err)
+	}
+}
+
+func TestSchemaCommand(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	stdout, stderr := runGlm(t, srv, "", "schema", "incident")
+	if !strings.Contains(stdout, "assigned_to\treference\tsys_user") {
+		t.Errorf("schema rows missing reference info:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "short_description\tstring\t\ttrue") {
+		t.Errorf("schema rows missing mandatory flag:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "display field: number") || !strings.Contains(stderr, "chain: incident < task") {
+		t.Errorf("schema meta line wrong: %q", stderr)
+	}
+
+	// Second run must serve from cache — no further schema endpoints hits.
+	before := hits["schema"]
+	runGlm(t, srv, "", "schema", "incident")
+	if hits["schema"] != before {
+		t.Errorf("second schema run should hit the cache (calls %d -> %d)", before, hits["schema"])
+	}
+}
+
+func TestTablesCommand(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	stdout, _ := runGlm(t, srv, "", "tables", "inc")
+	if !strings.Contains(stdout, "incident\tIncident\tTask") {
+		t.Errorf("tables output wrong:\n%s", stdout)
 	}
 }
 
