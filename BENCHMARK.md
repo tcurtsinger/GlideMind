@@ -91,13 +91,12 @@ Fresh session per task, same model, tool-neutral phrasing — the session's avai
   x_n1ll2_smart_gmt_todo table with name, when they run, order, and condition. Then show me
   the complete script of the one named "SmartWork - Validate Todo Order".
 - **T2:** Search our dev instance for every business rule, script include, and client script
-  that references processApprovedTimesheet. Show table, record name, and the matching lines only.
+  in the x_n1ll2_smart_gmt application that references processApprovedTimesheet. Show table,
+  record name, and the matching lines only.
 - **T3:** On our dev instance, show every field on the x_n1ll2_smart_gmt_timesheet table
   including inherited ones, with type, reference target, and mandatory flag. Then tell me
   whether the fields week_ending, total_hours, and approver exist, and list the 5 most recent
   timesheets using whichever of those exist.
-  *(Ground truth: week_ending and total_hours exist; "approver" does not — the real field is
-  approved_by, so this also scores the did-you-mean experience.)*
 - **T4:** On our dev instance, list in-progress update sets for the x_n1ll2_smart_gmt
   application, then summarize what the update set named "Travis Curtsinger" captured, grouped
   by artifact type.
@@ -111,6 +110,14 @@ Fresh session per task, same model, tool-neutral phrasing — the session's avai
 - **T10:** There's a custom table somewhere on our dev instance whose label is roughly
   "Milestone". Find it, show me its structure, and give me the 5 most recent records with
   sensible columns.
+
+### Evaluator-only notes (never pasted into a session)
+
+- **T3 ground truth:** week_ending and total_hours exist; "approver" does not — the real
+  field is approved_by. A correct run notices the miss (ideally surfacing a did-you-mean)
+  and lists timesheets using the two real fields.
+- **T2 ground truth:** 3 records reference the token — a script include defining it, a
+  script include calling it, and a UI action calling it.
 
 ## Results
 
