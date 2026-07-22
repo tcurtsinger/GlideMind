@@ -59,6 +59,10 @@ func TestExtractQueryFields(t *testing.T) {
 		{"GOTOnumber=INC0000001", ""},
 		{"javascript:gs.now()", ""},
 		{"sys_created_on>=javascript:gs.minutesAgoStart(15)", "sys_created_on"},
+		// RLQUERY scopes filter a child table — inner clauses are skipped,
+		// outer clauses on both sides still validate.
+		{"RLQUERYtask_sla.task,>=1^has_breached=true^ENDRLQUERY", ""},
+		{"active=true^RLQUERYtask_sla.task,>=1^has_breached=true^ENDRLQUERY^priority=1", "active,priority"},
 		{"", ""},
 	}
 	for _, tc := range cases {

@@ -73,7 +73,24 @@ func (m *TableMeta) Suggest(name string) []string {
 func ExtractQueryFields(encoded string) []string {
 	var names []string
 	seen := map[string]bool{}
+	rlDepth := 0
 	for _, clause := range strings.Split(encoded, "^") {
+		// Related-list scopes (RLQUERY...ENDRLQUERY) filter on a CHILD
+		// table — their inner clauses must not be validated against the
+		// outer table.
+		if strings.HasPrefix(clause, "RLQUERY") {
+			rlDepth++
+			continue
+		}
+		if strings.HasPrefix(clause, "ENDRLQUERY") {
+			if rlDepth > 0 {
+				rlDepth--
+			}
+			continue
+		}
+		if rlDepth > 0 {
+			continue
+		}
 		// Strip one leading uppercase marker: clause joiners (OR, NQ, EQ)
 		// keep a field behind them; ORDERBY/GROUPBY are followed by exactly
 		// a field name.
