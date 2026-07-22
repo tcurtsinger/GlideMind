@@ -48,7 +48,10 @@ func newPrimeCmd() *cobra.Command {
 Conventions:
 - Filters are native encoded queries; repeat -q to AND clauses. --since 15m|2h|3d on query/count/agg/grep.
 - Output: table on TTY, TSV piped; --format table|tsv|csv|json|jsonl|ids; --json = JSONL. json/jsonl/ids always carry sys_id.
-- Chain: glm query <t> -q ... --format ids | glm get <t> - --json
+- Economy: batch independent glm commands into ONE shell call; count/agg before listing;
+  chain glm query <t> ... --format ids | glm get <t> - --json; filter big output in the
+  shell so bulk data never enters your context.
+- agg: --group-by <field> [--sum f|--avg f|--min f|--max f] - count is implied.
 - Truncated values end in a marker naming the exact follow-up command; --full lifts caps.
 - Discover: glm tables <pattern>, then glm schema <table>. Errors suggest corrections.
 - get keys: sys_id, record number, or display value. --profile/-p picks the instance.

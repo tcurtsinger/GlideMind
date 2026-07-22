@@ -281,9 +281,13 @@ func TestPrimeListsEveryCommand(t *testing.T) {
 			t.Errorf("prime output missing %q:\n%s", want, stdout)
 		}
 	}
-	// The whole point is a small prompt: keep it near the 400-token budget.
-	if len(stdout) > 2400 {
-		t.Errorf("prime output is %d chars — blowing the ~400-token budget", len(stdout))
+	// The whole point is a small prompt: keep prime bounded (~650 tokens
+	// with the economy block — the block pays for itself many times over).
+	if len(stdout) > 2700 {
+		t.Errorf("prime output is %d chars — blowing the token budget", len(stdout))
+	}
+	if !strings.Contains(stdout, "Economy:") || !strings.Contains(stdout, "count/agg before listing") {
+		t.Errorf("prime must teach the economy conventions:\n%s", stdout)
 	}
 	if hits["schema"]+hits["list"]+hits["stats"] != 0 {
 		t.Errorf("prime must not touch the network: %v", hits)
