@@ -20,6 +20,8 @@ func TestNormalizeInstance(t *testing.T) {
 		{in: "acme", want: "https://acme.service-now.com"},
 		{in: "acme.service-now.com", want: "https://acme.service-now.com"},
 		{in: "https://acme.service-now.com/", want: "https://acme.service-now.com"},
+		{in: "https://acme.service-now.com/nav_to.do?uri=incident_list.do", want: "https://acme.service-now.com"},
+		{in: "acme.service-now.com/now/nav/ui/classic/params/target/incident.do", want: "https://acme.service-now.com"},
 		{in: "http://localhost:8080", want: "http://localhost:8080"},
 		{in: "  ", wantErr: true},
 	}

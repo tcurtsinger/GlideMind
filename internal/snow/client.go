@@ -53,7 +53,10 @@ func NormalizeInstance(s string) (*url.URL, error) {
 	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("invalid instance %q", s)
 	}
-	u.Path = strings.TrimSuffix(u.Path, "/")
+	// Users paste browser URLs (e.g. .../nav_to.do?uri=...). The REST API
+	// always lives at the host root, so drop any path outright — keeping it
+	// would silently aim every request at /nav_to.do/api/now/....
+	u.Path = ""
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u, nil

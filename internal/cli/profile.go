@@ -221,11 +221,14 @@ func newProfileRemoveCmd() *cobra.Command {
 			if f.Default == name {
 				f.Default = ""
 			}
-			if err := secret.Delete(name); err != nil {
-				return err
-			}
+			// Save the config before touching the keyring: a failed save
+			// then strands only an orphan credential (harmless, overwritten
+			// on re-add) instead of a configured profile with no secret.
 			if err := f.Save(); err != nil {
 				return err
+			}
+			if err := secret.Delete(name); err != nil {
+				return fmt.Errorf("profile removed from config, but deleting its keyring credential failed: %w", err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "profile %q removed\n", name)
 			return nil
