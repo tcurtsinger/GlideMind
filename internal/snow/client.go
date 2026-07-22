@@ -148,9 +148,12 @@ func retryAfter(resp *http.Response, attempt int) (time.Duration, bool) {
 	return retryDelay(resp, attempt), true
 }
 
-// Raw performs an arbitrary REST request (glm api) with the same auth,
-// retries, and error mapping as reads, returning the raw response body —
-// possibly empty (HTTP 204).
+// Raw performs an arbitrary REST request (glm api) with the same auth and
+// error mapping as reads, returning the raw response body — possibly empty
+// (HTTP 204). Automatic 429/503 retries apply to GET only: a 503 can arrive
+// after the instance already applied a write, so a non-GET request goes on
+// the wire exactly once — matching the single request the --yes preview
+// showed.
 func (c *Client) Raw(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, error) {
 	u := *c.base
 	u.Path += path
@@ -176,13 +179,15 @@ func (c *Client) Raw(ctx context.Context, method, path string, query url.Values,
 		if err != nil {
 			return nil, &NetworkError{Err: err}
 		}
-		if wait, ok := retryAfter(resp, attempt); ok {
-			c.log("HTTP %d, retrying in %s", resp.StatusCode, wait)
-			select {
-			case <-time.After(wait):
-				continue
-			case <-ctx.Done():
-				return nil, &NetworkError{Err: ctx.Err()}
+		if method == http.MethodGet {
+			if wait, ok := retryAfter(resp, attempt); ok {
+				c.log("HTTP %d, retrying in %s", resp.StatusCode, wait)
+				select {
+				case <-time.After(wait):
+					continue
+				case <-ctx.Done():
+					return nil, &NetworkError{Err: ctx.Err()}
+				}
 			}
 		}
 		// Read one byte past the cap so truncation is detected, never silent.
