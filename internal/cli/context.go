@@ -45,6 +45,32 @@ func resolveProfile(cmd *cobra.Command, flagName string) (*config.Resolved, erro
 	return res, nil
 }
 
+// requireWritable is gate 1 of the two-gate write model (DESIGN-WRITES.md
+// W1): the profile itself must be write-enabled — a stored, deliberate
+// property. Every write command calls this straight after resolveProfile,
+// before ANYTHING with side effects or blocking potential: a profile that
+// could never write must get the one-line refusal naming the fix, not a
+// credential-lookup error from a keyring it has no entry in, not a schema
+// fetch, and not a hang consuming stdin it would never send.
+func requireWritable(res *config.Resolved) error {
+	if res.Profile.Writable {
+		return nil
+	}
+	if res.Name == config.EnvProfileName {
+		// The env profile is not stored, so write-enable can never apply
+		// to it — point at the real remedy.
+		return fmt.Errorf("the %s env profile is always read-only — writes need a named, write-enabled profile: `glm profile add <name> --instance <url> --username <user> --writable`", config.EnvInstance)
+	}
+	return fmt.Errorf("profile %q is read-only — enable writes with `glm profile write-enable %s` (each write still needs --yes)", res.Name, res.Name)
+}
+
+// identityLine renders the acting identity for a write preview (W7): who the
+// write runs as, where, and through which profile — a write must never land
+// under an unexpected identity or instance.
+func identityLine(res *config.Resolved) string {
+	return output.SanitizeLine(fmt.Sprintf("as %s @ %s (profile %s)", res.Profile.Username, strings.TrimPrefix(res.Profile.Instance, "https://"), res.Name))
+}
+
 // clientForResolved builds an authenticated client for an already-resolved
 // profile (credential lookup happens here).
 func clientForResolved(cmd *cobra.Command, res *config.Resolved) (*snow.Client, error) {
@@ -99,18 +125,48 @@ func schemaStore(client *snow.Client) *schema.Store {
 // since the SN API silently ignores unknown fields and a false "field does
 // not exist" is worse than a missed typo. cached may be nil.
 func validateFields(ctx context.Context, store *schema.Store, table string, cached *schema.TableMeta, names []string) error {
+	return validateFieldsWith(ctx, store, table, cached, names, false)
+}
+
+// validateWriteFields is the write-path variant (DESIGN-WRITES.md W3): the
+// schema is FETCHED when the cache is cold (reads never pay that cost, but a
+// write must be checked) and an unknown field is a hard error. ServiceNow
+// silently ignores unknown fields on a write, so a typo'd field name is
+// silent data loss — the single worst write footgun. The one leniency kept
+// from reads lives inside Validate itself: an ACL-filtered dictionary cannot
+// prove a field wrong, so incomplete metadata still passes.
+func validateWriteFields(ctx context.Context, store *schema.Store, table string, names []string) error {
+	return validateFieldsWith(ctx, store, table, nil, names, true)
+}
+
+func validateFieldsWith(ctx context.Context, store *schema.Store, table string, cached *schema.TableMeta, names []string, write bool) error {
 	meta := cached
+	fetchedFresh := false
 	if meta == nil {
 		meta = store.GetCached(table)
 	}
 	if meta == nil {
-		return nil
+		if !write {
+			return nil
+		}
+		m, err := store.Get(ctx, table)
+		if err != nil {
+			return err
+		}
+		meta, fetchedFresh = m, true
 	}
-	if err := meta.Validate(names); err == nil {
-		return nil
+	verr := meta.Validate(names)
+	if verr == nil || fetchedFresh {
+		return verr
 	}
 	fresh, err := store.Refetch(ctx, table)
 	if err != nil || fresh == nil {
+		// The refetch could not settle it: reads let the API judge (a false
+		// "unknown field" is worse than a missed typo), writes surface the
+		// cached verdict (a missed typo is silent data loss).
+		if write {
+			return verr
+		}
 		return nil
 	}
 	return fresh.Validate(names)

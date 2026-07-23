@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tcurtsinger/GlideMind/internal/audit"
-	"github.com/tcurtsinger/GlideMind/internal/config"
 	"github.com/tcurtsinger/GlideMind/internal/output"
 )
 
@@ -65,20 +64,12 @@ func newAPICmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Gate 1 (DESIGN-WRITES.md W1): the profile itself must be
-			// write-enabled — a stored, deliberate property. This fires
-			// before ANYTHING with side effects or blocking potential: a
-			// profile that could never write must get the one-line refusal
-			// naming the fix, not a credential-lookup error from a keyring
-			// it has no entry in, and not a hang consuming a --body @- stdin
-			// it would never send.
-			if method != http.MethodGet && !res.Profile.Writable {
-				if res.Name == config.EnvProfileName {
-					// The env profile is not stored, so write-enable can
-					// never apply to it — point at the real remedy.
-					return fmt.Errorf("the %s env profile is always read-only — writes need a named, write-enabled profile: `glm profile add <name> --instance <url> --username <user> --writable`", config.EnvInstance)
+			// Gate 1 (DESIGN-WRITES.md W1): fires before the body is read —
+			// a refused write must never consume a --body @- stdin.
+			if method != http.MethodGet {
+				if err := requireWritable(res); err != nil {
+					return err
 				}
-				return fmt.Errorf("profile %q is read-only — enable writes with `glm profile write-enable %s` (each write still needs --yes)", res.Name, res.Name)
 			}
 
 			payload, err := readBodyArg(cmd, body)
@@ -106,7 +97,7 @@ func newAPICmd() *cobra.Command {
 					return err
 				}
 				fmt.Fprintf(errOut, "%s %s\n", method, target)
-				fmt.Fprintln(errOut, output.SanitizeLine(fmt.Sprintf("as %s @ %s (profile %s)", res.Profile.Username, strings.TrimPrefix(res.Profile.Instance, "https://"), res.Name)))
+				fmt.Fprintln(errOut, identityLine(res))
 				if len(payload) > 0 {
 					fmt.Fprintf(errOut, "%s\n", payload)
 				}

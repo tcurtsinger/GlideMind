@@ -371,6 +371,7 @@ func TestPrimeListsEveryCommand(t *testing.T) {
 		"glm attach list <table>",
 		"glm attach get <sys_id>",
 		"glm api <METHOD> <path>",
+		"glm update <table> <key> -f field=value",
 		"glm profile add <name>",
 		"encoded queries",
 		"--format ids",
@@ -379,10 +380,10 @@ func TestPrimeListsEveryCommand(t *testing.T) {
 			t.Errorf("prime output missing %q:\n%s", want, stdout)
 		}
 	}
-	// The whole point is a small prompt: keep prime bounded (~700 tokens —
-	// raised from ~650 when the write-gate profile commands joined the
-	// surface; the economy block pays for itself many times over).
-	if len(stdout) > 2900 {
+	// The whole point is a small prompt: keep prime bounded (~750 tokens —
+	// raised from ~700 when the update verb joined the surface; each write
+	// verb earns its line by replacing raw-REST guesswork).
+	if len(stdout) > 3020 {
 		t.Errorf("prime output is %d chars — blowing the token budget", len(stdout))
 	}
 	if !strings.Contains(stdout, "Economy:") || !strings.Contains(stdout, "count/agg before listing") {
