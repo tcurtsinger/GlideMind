@@ -114,6 +114,42 @@ func (s *Store) GetCached(table string) *TableMeta {
 	return entry.Meta
 }
 
+// Refetch fetches table metadata live and refreshes the cache, regardless of
+// Refresh. It self-heals validation when the cache predates a new field.
+func (s *Store) Refetch(ctx context.Context, table string) (*TableMeta, error) {
+	meta, err := Fetch(ctx, s.Client, table)
+	if err != nil {
+		return nil, err
+	}
+	s.write(table, meta)
+	return meta, nil
+}
+
+// CachedAt returns when the fresh cached entry for table was fetched and
+// whether one exists. It ignores Refresh (a pure cache read) so callers can
+// report cache age even when about to refetch.
+func (s *Store) CachedAt(table string) (time.Time, bool) {
+	if s.Dir == "" {
+		return time.Time{}, false
+	}
+	data, err := os.ReadFile(s.path(table))
+	if err != nil {
+		return time.Time{}, false
+	}
+	var entry cacheEntry
+	if json.Unmarshal(data, &entry) != nil || entry.Meta == nil {
+		return time.Time{}, false
+	}
+	ttl := s.TTL
+	if ttl <= 0 {
+		ttl = DefaultTTL
+	}
+	if time.Since(entry.FetchedAt) > ttl {
+		return time.Time{}, false
+	}
+	return entry.FetchedAt, true
+}
+
 // write persists metadata best-effort — a read-only cache dir must never
 // break a query.
 func (s *Store) write(table string, meta *TableMeta) {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -55,4 +56,29 @@ func schemaStore(client *snow.Client) *schema.Store {
 		return &schema.Store{Client: client}
 	}
 	return store
+}
+
+// validateFields checks names against the table's schema and self-heals a
+// stale cache: on a validation miss it refetches once — a field created
+// after the cache was written is the usual cause — and only surfaces the
+// error if the field is still unknown against fresh data (a real typo, with
+// a fresh did-you-mean). A cold cache or an unreachable refetch never blocks,
+// since the SN API silently ignores unknown fields and a false "field does
+// not exist" is worse than a missed typo. cached may be nil.
+func validateFields(ctx context.Context, store *schema.Store, table string, cached *schema.TableMeta, names []string) error {
+	meta := cached
+	if meta == nil {
+		meta = store.GetCached(table)
+	}
+	if meta == nil {
+		return nil
+	}
+	if err := meta.Validate(names); err == nil {
+		return nil
+	}
+	fresh, err := store.Refetch(ctx, table)
+	if err != nil || fresh == nil {
+		return nil
+	}
+	return fresh.Validate(names)
 }

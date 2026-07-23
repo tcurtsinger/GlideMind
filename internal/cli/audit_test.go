@@ -76,16 +76,73 @@ func TestAPIPreviewMatchesSentQuery(t *testing.T) {
 	}
 }
 
+func TestValidationSelfHealsStaleCache(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	// Warm the cache — this first schema fetch has no "tier".
+	runGlm(t, srv, "", "query", "evolving")
+	// A query on the just-created field must not be falsely blocked: glm
+	// refetches the schema once, sees tier, and proceeds.
+	if _, _, err := runGlmErr(t, srv, "", "query", "evolving", "-q", "tierISNOTEMPTY"); err != nil {
+		t.Errorf("validation must self-heal for a field added after caching, got: %v", err)
+	}
+	// A genuine unknown field still fails after the refetch confirms it.
+	if _, _, err := runGlmErr(t, srv, "", "query", "evolving", "-q", "nosuchfield=1"); err == nil {
+		t.Error("a real unknown field should still be rejected after refetch")
+	}
+}
+
+func TestQueryColumnHint(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	// Derived columns (no --fields): stderr says how many of the table's
+	// fields are shown so an omitted column is never a silent surprise.
+	_, stderr := runGlm(t, srv, "", "query", "incident")
+	if !strings.Contains(stderr, "columns:") || !strings.Contains(stderr, "--fields") {
+		t.Errorf("expected a column-count hint on stderr, got: %q", stderr)
+	}
+	// Explicit --fields: the caller chose, so no hint.
+	_, stderr = runGlm(t, srv, "", "query", "incident", "--fields", "number")
+	if strings.Contains(stderr, "columns:") {
+		t.Errorf("no column hint when --fields is explicit, got: %q", stderr)
+	}
+}
+
+func TestSchemaStampsCacheAge(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	_, stderr := runGlm(t, srv, "", "schema", "incident")
+	if !strings.Contains(stderr, "fetched live") {
+		t.Errorf("first schema read should report a live fetch, got: %q", stderr)
+	}
+	_, stderr = runGlm(t, srv, "", "schema", "incident")
+	if !strings.Contains(stderr, "cached") || !strings.Contains(stderr, "--refresh") {
+		t.Errorf("second schema read should report cache age + --refresh, got: %q", stderr)
+	}
+}
+
 func TestWhoamiPaginatesRoles(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)
 
-	stdout, _ := runGlm(t, srv, "", "whoami")
 	// 250 grants exist across two pages; a single 200 window would undercount.
-	if !strings.Contains(stdout, "(250)") {
-		t.Errorf("whoami must paginate all roles, got:\n%s", stdout)
+	// Default output previews a few and names the true total.
+	stdout, _ := runGlm(t, srv, "", "whoami")
+	if !strings.Contains(stdout, "250 total") || !strings.Contains(stdout, "--full for all") {
+		t.Errorf("whoami should preview roles and name the paginated total, got:\n%s", stdout)
 	}
 	if hits["whoami-roles"] < 2 {
 		t.Errorf("expected at least two role pages, got %d", hits["whoami-roles"])
+	}
+	// --full lists every role (exact count, no preview marker).
+	stdout, _ = runGlm(t, srv, "", "whoami", "--full")
+	if !strings.Contains(stdout, "(250)") || strings.Contains(stdout, "more (") {
+		t.Errorf("whoami --full must list all roles, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "role_249") {
+		t.Errorf("whoami --full must include roles past the preview window")
 	}
 }

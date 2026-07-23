@@ -4,11 +4,26 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/tcurtsinger/GlideMind/internal/output"
 )
+
+// roundAge renders a cache age compactly: 3h, 2d, 45m.
+func roundAge(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		return fmt.Sprintf("%dd", d/(24*time.Hour))
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh", d/time.Hour)
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm", d/time.Minute)
+	default:
+		return "<1m"
+	}
+}
 
 func newSchemaCmd() *cobra.Command {
 	var refresh bool
@@ -28,6 +43,7 @@ func newSchemaCmd() *cobra.Command {
 				return err
 			}
 			store := schemaStore(client)
+			cachedAt, wasCached := store.CachedAt(table)
 			store.Refresh = refresh
 			meta, err := store.Get(cmd.Context(), table)
 			if err != nil {
@@ -66,8 +82,12 @@ func newSchemaCmd() *cobra.Command {
 			if err := output.Records(cmd.OutOrStdout(), cols, rows, output.Options{Format: format}); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "%d fields - display field: %s - chain: %s\n",
-				len(rows), meta.DisplayField, strings.Join(meta.Chain, " < "))
+			source := "fetched live"
+			if !refresh && wasCached {
+				source = fmt.Sprintf("cached %s ago (--refresh to update)", roundAge(time.Since(cachedAt)))
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "%d fields - display field: %s - chain: %s - %s\n",
+				len(rows), meta.DisplayField, strings.Join(meta.Chain, " < "), source)
 			return nil
 		},
 	}

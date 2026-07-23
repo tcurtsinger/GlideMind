@@ -186,6 +186,60 @@ func TestRawRejectsAbsolutePath(t *testing.T) {
 	}
 }
 
+func TestRawAbortsOnLoginPage(t *testing.T) {
+	// The UI login/session page must abort with one line, never dump the
+	// whole document to the caller.
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+		w.Write([]byte(`<!DOCTYPE html><html><body><form action="/login.do" method="post">` + //nolint:errcheck
+			`<input name="user_name"><input type="password" name="user_password"></form></body></html>`))
+	}))
+	data, err := c.Raw(context.Background(), http.MethodGet, "/api/now/table/incident", nil, nil)
+	if err == nil {
+		t.Fatal("the login page must be an error, not returned data")
+	}
+	if data != nil {
+		t.Error("the login page body must not be handed back to the caller")
+	}
+	var pe *ProtocolError
+	if !errors.As(err, &pe) {
+		t.Errorf("login page should be a ProtocolError, got %T", err)
+	}
+}
+
+func TestRawPassesLegitimateHTML(t *testing.T) {
+	// glm api is a raw passthrough: HTML that is not the login page must flow
+	// through unchanged — including a doc that merely mentions login.do in
+	// prose or a link, which must not be mistaken for the login form.
+	cases := map[string]string{
+		"plain":             `<!DOCTYPE html><html><body><h1>Report</h1></body></html>`,
+		"mentions login.do": `<html><body><p>To sign in, visit <a href="/login.do">login.do</a>.</p></body></html>`,
+	}
+	for name, html := range cases {
+		t.Run(name, func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.Write([]byte(html)) //nolint:errcheck
+			}))
+			data, err := c.Raw(context.Background(), http.MethodGet, "/api/x/report", nil, nil)
+			if err != nil {
+				t.Fatalf("legitimate HTML must pass through, got: %v", err)
+			}
+			if string(data) != html {
+				t.Errorf("HTML body altered: %q", data)
+			}
+		})
+	}
+}
+
+func TestRawRejectsFragment(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	// A literal # would silently truncate the request to a fragment.
+	if _, err := c.Raw(context.Background(), http.MethodGet, "/api/x?sysparm_query=nameLIKEfoo#bar", nil, nil); err == nil {
+		t.Error("a path containing a literal # must be rejected, not truncated")
+	}
+}
+
 func TestMalformedJSONIsProtocolError(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{not json`)) //nolint:errcheck

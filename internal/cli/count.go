@@ -25,11 +25,9 @@ func newCountCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Cache-only typo check on query fields; never an extra call.
-			if meta := schemaStore(client).GetCached(args[0]); meta != nil {
-				if err := meta.Validate(schema.ExtractQueryFields(encoded)); err != nil {
-					return err
-				}
+			// Pre-flight typo check; self-heals a stale cache on a miss.
+			if err := validateFields(cmd.Context(), schemaStore(client), args[0], nil, schema.ExtractQueryFields(encoded)); err != nil {
+				return err
 			}
 			n, err := client.Count(cmd.Context(), args[0], encoded)
 			if err != nil {

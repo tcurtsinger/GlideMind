@@ -85,21 +85,13 @@ func newQueryCmd() *cobra.Command {
 
 			// Pre-flight validation: catch typo'd fields before the request
 			// (the SN API silently returns empty strings for unknown ones).
-			// Strictly cache/no-network beyond what this command already
-			// fetched — validation never adds API calls and never blocks a
-			// query on instances without dictionary access.
-			if meta == nil {
-				meta = store.GetCached(table)
+			names := append([]string{}, splitFields(o.fields)...)
+			if o.orderBy != "" {
+				names = append(names, strings.TrimPrefix(o.orderBy, "-"))
 			}
-			if meta != nil {
-				names := append([]string{}, splitFields(o.fields)...)
-				if o.orderBy != "" {
-					names = append(names, strings.TrimPrefix(o.orderBy, "-"))
-				}
-				names = append(names, schema.ExtractQueryFields(encoded)...)
-				if err := meta.Validate(names); err != nil {
-					return err
-				}
+			names = append(names, schema.ExtractQueryFields(encoded)...)
+			if err := validateFields(ctx, store, table, meta, names); err != nil {
+				return err
 			}
 
 			// Machine formats always carry sys_id for chaining; tabular
@@ -133,6 +125,15 @@ func newQueryCmd() *cobra.Command {
 				return err
 			}
 			emitPageMeta(cmd.ErrOrStderr(), o.offset, len(records), total, o.limit)
+			// When columns were derived (no --fields), say how many of the
+			// table's fields are shown so a missing column is never a silent
+			// surprise — the zero-config defaults can't know which field the
+			// caller cares about.
+			if o.fields == "" && meta != nil && len(records) > 0 {
+				if shown, all := len(fields), len(meta.Fields); all > shown {
+					fmt.Fprintf(cmd.ErrOrStderr(), "columns: %d of %d shown - --fields to choose others\n", shown, all)
+				}
+			}
 			return nil
 		},
 	}

@@ -13,7 +13,8 @@ import (
 )
 
 func newWhoamiCmd() *cobra.Command {
-	return &cobra.Command{
+	var full bool
+	cmd := &cobra.Command{
 		Use:   "whoami",
 		Short: "Show your identity and roles on the instance",
 		Args:  cobra.NoArgs,
@@ -82,11 +83,23 @@ func newWhoamiCmd() *cobra.Command {
 					roles = append(roles, n)
 				}
 				sort.Strings(roles)
-				fmt.Fprintf(out, "roles     %s (%d)\n", strings.Join(roles, ", "), len(roles))
+				// A privileged account can carry hundreds of roles; dumping
+				// them all into an agent's context on a sanity check is the
+				// anti-pattern glm exists to avoid. Preview a few, name the
+				// total, and offer --full for the complete list.
+				const preview = 10
+				if !full && len(roles) > preview {
+					fmt.Fprintf(out, "roles     %s … +%d more (%d total) - --full for all\n",
+						strings.Join(roles[:preview], ", "), len(roles)-preview, len(roles))
+				} else {
+					fmt.Fprintf(out, "roles     %s (%d)\n", strings.Join(roles, ", "), len(roles))
+				}
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&full, "full", false, "list every role instead of a preview")
+	return cmd
 }
 
 // field reads a Table API value as a string, tolerating both plain values and

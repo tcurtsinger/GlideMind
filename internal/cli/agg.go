@@ -53,16 +53,14 @@ func newAggCmd() *cobra.Command {
 				countFlag = true
 			}
 
-			// Cache-only typo check; never an extra call.
-			if meta := schemaStore(client).GetCached(table); meta != nil {
-				var names []string
-				for _, set := range [][]string{groups, sums, avgs, mins, maxs} {
-					names = append(names, set...)
-				}
-				names = append(names, schema.ExtractQueryFields(encoded)...)
-				if err := meta.Validate(names); err != nil {
-					return err
-				}
+			// Pre-flight typo check; self-heals a stale cache on a miss.
+			var names []string
+			for _, set := range [][]string{groups, sums, avgs, mins, maxs} {
+				names = append(names, set...)
+			}
+			names = append(names, schema.ExtractQueryFields(encoded)...)
+			if err := validateFields(ctx, schemaStore(client), table, nil, names); err != nil {
+				return err
 			}
 
 			q := url.Values{}
