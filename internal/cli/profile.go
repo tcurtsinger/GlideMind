@@ -27,13 +27,51 @@ func newProfileCmd() *cobra.Command {
 		newProfileUseCmd(),
 		newProfileTestCmd(),
 		newProfileRemoveCmd(),
+		newProfileWritableCmd("write-enable", true),
+		newProfileWritableCmd("write-disable", false),
 	)
 	return cmd
 }
 
+// newProfileWritableCmd flips the per-profile write gate (DESIGN-WRITES.md
+// W1). It is a stored, deliberate property — the first of the two gates
+// every write must pass (the second is per-command confirmation).
+func newProfileWritableCmd(name string, enable bool) *cobra.Command {
+	short := "Allow writes on a profile (each still needs --yes)"
+	if !enable {
+		short = "Make a profile read-only again (the default)"
+	}
+	return &cobra.Command{
+		Use:   name + " <name>",
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			f, err := config.Load()
+			if err != nil {
+				return err
+			}
+			p, ok := f.Profiles[args[0]]
+			if !ok {
+				return fmt.Errorf("profile %q not found (have: %v)", args[0], f.Names())
+			}
+			p.Writable = enable
+			f.Profiles[args[0]] = p
+			if err := f.Save(); err != nil {
+				return err
+			}
+			state := "writable — non-GET `glm api` calls run with --yes"
+			if !enable {
+				state = "read-only"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "profile %q is now %s\n", args[0], state)
+			return nil
+		},
+	}
+}
+
 func newProfileAddCmd() *cobra.Command {
 	var instance, username string
-	var passwordStdin bool
+	var passwordStdin, writable bool
 
 	cmd := &cobra.Command{
 		Use:   "add <name>",
@@ -64,6 +102,7 @@ func newProfileAddCmd() *cobra.Command {
 				Instance: base.String(),
 				Auth:     "basic",
 				Username: username,
+				Writable: writable,
 			}
 			// Deliberately no auto-default: with one profile it is implicit
 			// anyway, and a sticky default armed here would silently route
@@ -107,6 +146,7 @@ func newProfileAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&instance, "instance", "", "instance name or URL, e.g. acme or https://acme.service-now.com (required)")
 	cmd.Flags().StringVar(&username, "username", "", "instance username (required)")
 	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "read the password from stdin instead of prompting")
+	cmd.Flags().BoolVar(&writable, "writable", false, "allow writes on this profile (default read-only)")
 	_ = cmd.MarkFlagRequired("instance")
 	_ = cmd.MarkFlagRequired("username")
 	return cmd
@@ -182,7 +222,11 @@ func newProfileListCmd() *cobra.Command {
 				if name == f.Default {
 					marker = "*"
 				}
-				fmt.Fprintf(out, "%s %s\t%s\t%s\n", marker, name, p.Instance, p.Username)
+				access := "ro"
+				if p.Writable {
+					access = "rw"
+				}
+				fmt.Fprintf(out, "%s %s\t%s\t%s\t%s\n", marker, name, p.Instance, p.Username, access)
 			}
 			return nil
 		},

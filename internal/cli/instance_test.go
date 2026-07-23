@@ -11,13 +11,12 @@ import (
 	"github.com/tcurtsinger/GlideMind/internal/secret"
 )
 
-// pointConfigAt redirects the config dir to a temp dir and clears ambient
-// GLM_* selection vars so tests control resolution completely.
+// pointConfigAt redirects the config dir to a per-test temp dir (shared with
+// any later runGlm calls via the owner marker) and clears ambient GLM_*
+// selection vars so tests control resolution completely.
 func pointConfigAt(t *testing.T) {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("APPDATA", dir)
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	isolateConfig(t)
 	t.Setenv(config.EnvProfile, "")
 	t.Setenv(config.EnvInstance, "")
 	t.Setenv(config.EnvUsername, "")

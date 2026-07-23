@@ -82,7 +82,13 @@ func profileLine() string {
 		if name == f.Default {
 			marker = "*" // the default when -p is omitted
 		}
-		parts = append(parts, fmt.Sprintf("%s%s (%s)", name, marker, strings.TrimPrefix(f.Profiles[name].Instance, "https://")))
+		host := strings.TrimPrefix(f.Profiles[name].Instance, "https://")
+		if f.Profiles[name].Writable {
+			// Writes stay gated behind --yes, but the agent should know
+			// which instances CAN be written at all (DESIGN-WRITES.md W1).
+			host += ", rw"
+		}
+		parts = append(parts, fmt.Sprintf("%s%s (%s)", name, marker, host))
 	}
 	if len(f.Profiles) == 1 {
 		return "Profile: " + parts[0]

@@ -61,10 +61,11 @@ func TestSchemaIDsFormatFails(t *testing.T) {
 func TestAPIPreviewMatchesSentQuery(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)
+	writableProfile(t, srv, "w")
 
 	// The path carries its own query and -f adds another param. The preview
 	// must show the merged URL (one "?"), matching what Raw would send.
-	_, stderr, err := runGlmErr(t, srv, "", "api", "POST", "/api/x?a=1", "-f", "b=2")
+	_, stderr, err := runGlmErr(t, srv, "", "api", "POST", "/api/x?a=1", "-f", "b=2", "-p", "w")
 	if err == nil {
 		t.Fatal("non-GET without --yes must refuse")
 	}

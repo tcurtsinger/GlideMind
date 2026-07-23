@@ -2,10 +2,13 @@ package cli
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tcurtsinger/GlideMind/internal/config"
 )
 
 func TestAttachListBySysIDAndByNumber(t *testing.T) {
@@ -140,22 +143,41 @@ func TestAPIGetRendersResultArray(t *testing.T) {
 	}
 }
 
+// writableProfile writes a write-enabled named profile pointing at srv into
+// the test's isolated config dir; commands select it with -p <name>, which
+// outranks the GLM_INSTANCE env profile runGlm sets.
+func writableProfile(t *testing.T, srv *httptest.Server, name string) {
+	t.Helper()
+	isolateConfig(t)
+	f := &config.File{Profiles: map[string]config.Profile{
+		name: {Instance: srv.URL, Auth: "basic", Username: "svc.glm", Writable: true},
+	}}
+	if err := f.Save(); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+}
+
 func TestAPINonGetRequiresYes(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)
+	writableProfile(t, srv, "w")
 
-	_, stderr, err := runGlmErr(t, srv, "", "api", "DELETE", "/api/now/table/incident/"+sysIDa)
+	_, stderr, err := runGlmErr(t, srv, "", "api", "DELETE", "/api/now/table/incident/"+sysIDa, "-p", "w")
 	if err == nil || !strings.Contains(err.Error(), "--yes") {
 		t.Fatalf("non-GET without --yes must refuse, got: %v", err)
 	}
 	if !strings.Contains(stderr, "DELETE "+srv.URL+"/api/now/table/incident/"+sysIDa) {
 		t.Errorf("the request must be printed before refusing: %q", stderr)
 	}
+	// W7: the preview names who the write would run as, and where.
+	if !strings.Contains(stderr, "as svc.glm @ ") || !strings.Contains(stderr, "(profile w)") {
+		t.Errorf("the preview must name the acting identity: %q", stderr)
+	}
 	if hits["get"] != 0 {
 		t.Errorf("refused request must never reach the instance, got %d hits", hits["get"])
 	}
 
-	stdout, _ := runGlm(t, srv, "", "api", "DELETE", "/api/now/table/incident/"+sysIDa, "--yes")
+	stdout, _ := runGlm(t, srv, "", "api", "DELETE", "/api/now/table/incident/"+sysIDa, "-p", "w", "--yes")
 	if hits["get"] != 1 {
 		t.Errorf("confirmed request should execute once, got %d hits", hits["get"])
 	}
@@ -326,9 +348,12 @@ func TestWindowsBOMTolerance(t *testing.T) {
 		t.Errorf("BOM-prefixed stdin key must resolve:\n%s", stdout)
 	}
 
-	// Same stream shape for a piped --body payload.
-	if _, _, err := runGlmErr(t, srv, bom+`{"short_description":"x"}`, "api", "POST", "/api/now/table/incident", "--body", "@-", "--yes"); err != nil {
-		t.Errorf("BOM-prefixed stdin body must validate as JSON: %v", err)
+	// Same stream shape for a piped --body payload. The env profile is
+	// always read-only (DESIGN-WRITES.md W1), so a clean body reaches the
+	// write gate and fails THERE — a BOM-corrupted body would fail earlier
+	// with "not valid JSON", which is what this pins against.
+	if _, _, err := runGlmErr(t, srv, bom+`{"short_description":"x"}`, "api", "POST", "/api/now/table/incident", "--body", "@-", "--yes"); err == nil || strings.Contains(err.Error(), "valid JSON") {
+		t.Errorf("BOM-prefixed stdin body must validate as JSON before the write gate, got: %v", err)
 	}
 }
 
@@ -351,9 +376,10 @@ func TestPrimeListsEveryCommand(t *testing.T) {
 			t.Errorf("prime output missing %q:\n%s", want, stdout)
 		}
 	}
-	// The whole point is a small prompt: keep prime bounded (~650 tokens
-	// with the economy block — the block pays for itself many times over).
-	if len(stdout) > 2700 {
+	// The whole point is a small prompt: keep prime bounded (~700 tokens —
+	// raised from ~650 when the write-gate profile commands joined the
+	// surface; the economy block pays for itself many times over).
+	if len(stdout) > 2900 {
 		t.Errorf("prime output is %d chars — blowing the token budget", len(stdout))
 	}
 	if !strings.Contains(stdout, "Economy:") || !strings.Contains(stdout, "count/agg before listing") {
