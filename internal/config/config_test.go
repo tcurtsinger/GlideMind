@@ -117,6 +117,32 @@ func TestResolveEnvInstanceProfile(t *testing.T) {
 	if r.Name != EnvProfileName || r.Profile.Instance != "acme" || r.Profile.Username != "svc.glm" {
 		t.Fatalf("env profile mismatch: %+v", r)
 	}
+	// Pure env world (CI container, no config): no other candidate, no stamp.
+	if r.Multi {
+		t.Fatal("Multi should be false with no configured profiles")
+	}
+}
+
+// TestResolveEnvInstanceMultiWithProfiles: an env-selected instance next to
+// any configured profile means another instance could have been meant — the
+// stamp must fire, so Multi is true even though the env path never consults
+// the profile list for selection.
+func TestResolveEnvInstanceMultiWithProfiles(t *testing.T) {
+	pointConfigAt(t)
+	write(t, &File{
+		Profiles: map[string]Profile{
+			"dev": {Instance: "https://dev.service-now.com", Username: "a"},
+		},
+	})
+	t.Setenv(EnvInstance, "acme")
+
+	r, err := Resolve("")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.Name != EnvProfileName || !r.Multi {
+		t.Fatalf("env selection alongside a configured profile should set Multi: %+v", r)
+	}
 }
 
 func TestResolveEnvUsernameOverridesNamedProfile(t *testing.T) {

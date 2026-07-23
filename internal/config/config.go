@@ -132,9 +132,11 @@ type Resolved struct {
 	Name    string
 	Source  string
 	Profile Profile
-	// Multi is true when two or more profiles are configured — the situation
-	// where a wrong-instance call is possible and commands stamp which
-	// instance they ran against (DESIGN-INSTANCES.md I3).
+	// Multi is true when the selected instance is not the only candidate —
+	// 2+ profiles configured, or an env-selected instance alongside any
+	// configured profile. It is the situation where a wrong-instance call is
+	// possible, so commands stamp which instance they ran against
+	// (DESIGN-INSTANCES.md I3).
 	Multi bool
 }
 
@@ -150,6 +152,14 @@ func Resolve(flagName string) (*Resolved, error) {
 
 	if name == "" {
 		if inst := os.Getenv(EnvInstance); inst != "" {
+			// An env-selected instance next to any configured profile means
+			// another instance could have been meant — stamp it. Best-effort
+			// count only: a corrupt config file must not break env-only (CI)
+			// usage, and the count merely drives stamping.
+			multi := false
+			if f, err := Load(); err == nil {
+				multi = len(f.Profiles) >= 1
+			}
 			return &Resolved{
 				Name:   EnvProfileName,
 				Source: EnvInstance + " env",
@@ -158,6 +168,7 @@ func Resolve(flagName string) (*Resolved, error) {
 					Auth:     "basic",
 					Username: os.Getenv(EnvUsername),
 				},
+				Multi: multi,
 			}, nil
 		}
 	}

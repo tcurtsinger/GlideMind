@@ -70,6 +70,7 @@ func newProfileAddCmd() *cobra.Command {
 			// commands to the first-added instance the moment a second one
 			// exists — the wrong-instance leak DESIGN-INSTANCES.md I1 closes.
 			// A default is only ever set explicitly via `glm profile use`.
+			clearedDefault := clearLegacyDefault(f, existed)
 			// add is otherwise non-transactional: capture any prior credential
 			// so a failed config save can roll the keyring back instead of
 			// leaving the old instance/username paired with a new password.
@@ -93,7 +94,10 @@ func newProfileAddCmd() *cobra.Command {
 				verb = "updated"
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "profile %q %s (%s as %s)\n", name, verb, base.String(), username)
-			if len(f.Profiles) >= 2 && f.Default == "" {
+			switch {
+			case clearedDefault != "":
+				fmt.Fprintf(cmd.ErrOrStderr(), "cleared implicit default %q — commands now require -p <name> (restore: glm profile use %s)\n", clearedDefault, clearedDefault)
+			case len(f.Profiles) >= 2 && f.Default == "":
 				fmt.Fprintf(cmd.ErrOrStderr(), "%d profiles configured — commands now require -p <name> (or set a default: glm profile use <name>)\n", len(f.Profiles))
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "try: glm profile test %s\n", name)
@@ -106,6 +110,23 @@ func newProfileAddCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("instance")
 	_ = cmd.MarkFlagRequired("username")
 	return cmd
+}
+
+// clearLegacyDefault migrates configs written when `profile add` still
+// auto-defaulted the first profile: when this add takes the config from one
+// profile to two and a default is set, the default is cleared (and returned
+// for messaging). A default set while only one profile existed never had an
+// observable effect — the single-profile fallback covered it — so nothing
+// deliberate is lost, and keeping it would silently preserve the
+// wrong-instance path DESIGN-INSTANCES.md I1 closes. Defaults chosen in an
+// already-multi-profile world are deliberate and stay.
+func clearLegacyDefault(f *config.File, existed bool) string {
+	if existed || len(f.Profiles) != 2 || f.Default == "" {
+		return ""
+	}
+	old := f.Default
+	f.Default = ""
+	return old
 }
 
 func readPassword(cmd *cobra.Command, fromStdin bool) (string, error) {

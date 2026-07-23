@@ -17,7 +17,7 @@ leaks: the silent default and invisible execution.
 | # | Decision | Choice |
 |---|----------|--------|
 | I1 | Selection | 1 profile → implicit; 2+ profiles → `-p` required (exit 1 + profile list if omitted) |
-| I2 | Default opt-out | `glm profile default <name>` deliberately restores a default; stored, like `writable` |
+| I2 | Default opt-out | `glm profile use <name>` deliberately restores a default; stored, like `writable` |
 | I3 | Stamping | With 2+ profiles, every command stamps `instance: <profile> (<host>)` on stderr |
 | I4 | Agent onboarding | `glm prime` lists configured profiles (+ default, + writable flags) up front |
 | I5 | Cross-instance diff | `glm diff` — record diff and schema diff between two instances |
@@ -30,9 +30,13 @@ Zero-config principle applied to safety: the requirement derives from the profil
 - **Two or more**: ambiguity exists, so glm refuses to guess. Omitting `-p` exits 1 with
   `multiple profiles configured (dev, smartwork, qa): pass -p <name>` — an agent self-heals from
   that in one turn, and a silent wrong-instance call becomes impossible.
-- **`glm profile default <name>`** is the human escape hatch: a deliberate, stored choice to
-  restore implicit selection (clear with `glm profile default --clear`). Even with a default set,
+- **`glm profile use <name>`** is the human escape hatch: a deliberate, stored choice to
+  restore implicit selection (clear with `glm profile use --clear`). Even with a default set,
   stamping (I3) still applies — convenience never removes the evidence trail.
+- **Legacy migration**: configs written before this change carry a default auto-set by
+  `profile add`. Adding the second profile clears it (with a message naming the restore
+  command) — a default set while only one profile existed never had an observable effect, so
+  nothing deliberate is lost. Defaults chosen in an already-multi-profile world stay.
 
 ## I3 — Instance stamping
 
