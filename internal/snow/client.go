@@ -225,27 +225,10 @@ func retryAfter(resp *http.Response, attempt int) (time.Duration, bool) {
 // the wire exactly once — matching the single request the --yes preview
 // showed.
 func (c *Client) Raw(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, error) {
-	// The path is already percent-encoded by the caller (e.g. a%2Fb). Parse
-	// it as a relative reference so escapes survive: assigning to URL.Path
-	// would make URL.String re-escape the % into %25.
-	ref, err := url.Parse(path)
+	u, err := c.rawURL(path, query)
 	if err != nil {
-		return nil, fmt.Errorf("invalid request path %q: %w", path, err)
+		return nil, err
 	}
-	if ref.IsAbs() || ref.Host != "" || ref.User != nil {
-		return nil, fmt.Errorf("request path must be a relative path, not %q", path)
-	}
-	u := *c.base
-	u.Path = ref.Path
-	u.RawPath = ref.EscapedPath()
-	// -f params merge with any query already present in the path.
-	merged := ref.Query()
-	for k, vs := range query {
-		for _, v := range vs {
-			merged.Add(k, v)
-		}
-	}
-	u.RawQuery = merged.Encode()
 
 	for attempt := 1; ; attempt++ {
 		var rdr io.Reader
@@ -295,6 +278,41 @@ func (c *Client) Raw(ctx context.Context, method, path string, query url.Values,
 		}
 		return data, nil
 	}
+}
+
+// rawURL builds the absolute URL a Raw request will hit. The path is already
+// percent-encoded by the caller (e.g. a%2Fb); parsing it as a relative
+// reference preserves those escapes (assigning to URL.Path would re-escape %
+// into %25). Any query already in the path merges with the caller's params.
+func (c *Client) rawURL(path string, query url.Values) (*url.URL, error) {
+	ref, err := url.Parse(path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid request path %q: %w", path, err)
+	}
+	if ref.IsAbs() || ref.Host != "" || ref.User != nil {
+		return nil, fmt.Errorf("request path must be a relative path, not %q", path)
+	}
+	u := *c.base
+	u.Path = ref.Path
+	u.RawPath = ref.EscapedPath()
+	merged := ref.Query()
+	for k, vs := range query {
+		for _, v := range vs {
+			merged.Add(k, v)
+		}
+	}
+	u.RawQuery = merged.Encode()
+	return &u, nil
+}
+
+// PreviewURL returns the exact absolute URL a Raw call with these arguments
+// would send, so a --yes write preview shows what actually goes on the wire.
+func (c *Client) PreviewURL(path string, query url.Values) (string, error) {
+	u, err := c.rawURL(path, query)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
 }
 
 // Attachment fetches one attachment's metadata by sys_id.

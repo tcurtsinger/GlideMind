@@ -71,8 +71,9 @@ func newProfileAddCmd() *cobra.Command {
 			// add is otherwise non-transactional: capture any prior credential
 			// so a failed config save can roll the keyring back instead of
 			// leaving the old instance/username paired with a new password.
-			oldPw, getErr := secret.Get(name)
-			hadOld := getErr == nil
+			// GetStored reads the keyring only — Get would return a
+			// GLM_PASSWORD override and corrupt the rollback.
+			oldPw, hadOld := secret.GetStored(name)
 			if err := secret.Set(name, password); err != nil {
 				return err
 			}

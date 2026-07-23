@@ -58,6 +58,24 @@ func TestSchemaIDsFormatFails(t *testing.T) {
 	}
 }
 
+func TestAPIPreviewMatchesSentQuery(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	// The path carries its own query and -f adds another param. The preview
+	// must show the merged URL (one "?"), matching what Raw would send.
+	_, stderr, err := runGlmErr(t, srv, "", "api", "POST", "/api/x?a=1", "-f", "b=2")
+	if err == nil {
+		t.Fatal("non-GET without --yes must refuse")
+	}
+	if !strings.Contains(stderr, "a=1") || !strings.Contains(stderr, "b=2") {
+		t.Errorf("preview must include the merged query: %q", stderr)
+	}
+	if strings.Count(stderr, "?") != 1 {
+		t.Errorf("preview must have exactly one query separator, got: %q", stderr)
+	}
+}
+
 func TestWhoamiPaginatesRoles(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)

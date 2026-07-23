@@ -32,6 +32,17 @@ func Get(profile string) (string, error) {
 	return v, nil
 }
 
+// GetStored returns only the OS keyring credential, ignoring GLM_PASSWORD.
+// Use it where the true persisted state matters — e.g. transactional
+// rollback — rather than the effective credential Get resolves.
+func GetStored(profile string) (string, bool) {
+	v, err := keyring.Get(service, profile)
+	if err != nil {
+		return "", false
+	}
+	return v, true
+}
+
 // Set stores the credential for a profile in the OS keyring.
 func Set(profile, value string) error {
 	if err := keyring.Set(service, profile, value); err != nil {
