@@ -14,7 +14,7 @@ import (
 func newPrimeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "prime",
-		Short: "Print the agent cheatsheet (~750 tokens)",
+		Short: "Print the agent cheatsheet (~800 tokens)",
 		Long: "Emits a compact orientation for AI agents: every command with its\n" +
 			"synopsis plus the shared conventions. The command list is generated\n" +
 			"from the live registry, so it cannot drift from the binary.",
