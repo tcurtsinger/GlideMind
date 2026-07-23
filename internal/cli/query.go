@@ -44,6 +44,12 @@ func newQueryCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			table := args[0]
+			if err := requirePositive("limit", o.limit); err != nil {
+				return err
+			}
+			if err := requireNonNeg("offset", o.offset); err != nil {
+				return err
+			}
 			client, _, err := clientFor(cmd, "")
 			if err != nil {
 				return err
@@ -106,9 +112,10 @@ func newQueryCmd() *cobra.Command {
 			}
 
 			q := url.Values{}
-			if encoded != "" {
-				q.Set("sysparm_query", encoded)
-			}
+			// A unique final sort key makes offset pagination deterministic:
+			// without it, ties in the requested order (or no order at all)
+			// let inserts/updates between pages skip or duplicate rows.
+			q.Set("sysparm_query", withStableSort(encoded))
 			q.Set("sysparm_fields", strings.Join(requested, ","))
 			q.Set("sysparm_limit", strconv.Itoa(o.limit))
 			if o.offset > 0 {
@@ -183,6 +190,9 @@ func sinceClause(s string) (string, error) {
 	return fmt.Sprintf("sys_updated_on>=javascript:gs.minutesAgoStart(%d)", minutes), nil
 }
 
+// maxSinceDays bounds --since Nd so the day→duration multiply can't overflow.
+const maxSinceDays = 3660 // ~10 years
+
 // parseSince converts 15m/2h/3d into whole minutes for
 // gs.minutesAgoStart(n), which evaluates server-side and is timezone-safe.
 func parseSince(s string) (int, error) {
@@ -191,6 +201,11 @@ func parseSince(s string) (int, error) {
 		n, err := strconv.Atoi(days)
 		if err != nil || n <= 0 {
 			return 0, fmt.Errorf("invalid --since %q (use forms like 15m, 2h, 3d)", s)
+		}
+		// Bound before multiplying so a huge day count can't overflow
+		// time.Duration into a nonsense (or negative) window.
+		if n > maxSinceDays {
+			return 0, fmt.Errorf("--since %q is too large (max %dd)", s, maxSinceDays)
 		}
 		d = time.Duration(n) * 24 * time.Hour
 	} else {
@@ -277,6 +292,31 @@ func encodedQueryValue(kind, v string) error {
 		return fmt.Errorf(`%s contains "^", the encoded-query separator, which cannot be matched server-side — narrow it to a fragment without "^"`, kind)
 	}
 	return nil
+}
+
+// requirePositive and requireNonNeg validate numeric flags before any
+// credential resolution or network work, so bad input fails fast (exit 1).
+func requirePositive(name string, v int) error {
+	if v <= 0 {
+		return fmt.Errorf("--%s must be positive, got %d", name, v)
+	}
+	return nil
+}
+
+func requireNonNeg(name string, v int) error {
+	if v < 0 {
+		return fmt.Errorf("--%s cannot be negative, got %d", name, v)
+	}
+	return nil
+}
+
+// withStableSort appends sys_id as the final ORDERBY so pagination is
+// deterministic; it becomes the sole order when the caller gave none.
+func withStableSort(encoded string) string {
+	if encoded == "" {
+		return "ORDERBYsys_id"
+	}
+	return encoded + "^ORDERBYsys_id"
 }
 
 func splitFields(s string) []string {

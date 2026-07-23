@@ -23,6 +23,7 @@ const (
 	baseRetryWait = 500 * time.Millisecond
 	maxBodyBytes  = 8 << 20
 	maxRedirects  = 5
+	maxRetryDelay = 30 * time.Second
 )
 
 // Record is one row from the Table API. Value types depend on the
@@ -100,6 +101,10 @@ func NewBasic(instance, username, password string, timeout time.Duration) (*Clie
 	}
 	if username == "" {
 		return nil, fmt.Errorf("username is empty (set it on the profile or via GLM_USERNAME)")
+	}
+	// A zero/negative timeout would disable the client deadline entirely.
+	if timeout <= 0 {
+		return nil, fmt.Errorf("timeout must be positive, got %s", timeout)
 	}
 	return &Client{
 		base:     u,
@@ -220,9 +225,10 @@ func retryAfter(resp *http.Response, attempt int) (time.Duration, bool) {
 // the wire exactly once — matching the single request the --yes preview
 // showed.
 func (c *Client) Raw(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, error) {
-	u := *c.base
-	u.Path += path
-	u.RawQuery = query.Encode()
+	u, err := c.rawURL(path, query)
+	if err != nil {
+		return nil, err
+	}
 
 	for attempt := 1; ; attempt++ {
 		var rdr io.Reader
@@ -272,6 +278,41 @@ func (c *Client) Raw(ctx context.Context, method, path string, query url.Values,
 		}
 		return data, nil
 	}
+}
+
+// rawURL builds the absolute URL a Raw request will hit. The path is already
+// percent-encoded by the caller (e.g. a%2Fb); parsing it as a relative
+// reference preserves those escapes (assigning to URL.Path would re-escape %
+// into %25). Any query already in the path merges with the caller's params.
+func (c *Client) rawURL(path string, query url.Values) (*url.URL, error) {
+	ref, err := url.Parse(path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid request path %q: %w", path, err)
+	}
+	if ref.IsAbs() || ref.Host != "" || ref.User != nil {
+		return nil, fmt.Errorf("request path must be a relative path, not %q", path)
+	}
+	u := *c.base
+	u.Path = ref.Path
+	u.RawPath = ref.EscapedPath()
+	merged := ref.Query()
+	for k, vs := range query {
+		for _, v := range vs {
+			merged.Add(k, v)
+		}
+	}
+	u.RawQuery = merged.Encode()
+	return &u, nil
+}
+
+// PreviewURL returns the exact absolute URL a Raw call with these arguments
+// would send, so a --yes write preview shows what actually goes on the wire.
+func (c *Client) PreviewURL(path string, query url.Values) (string, error) {
+	u, err := c.rawURL(path, query)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
 }
 
 // Attachment fetches one attachment's metadata by sys_id.
@@ -381,7 +422,7 @@ func (c *Client) Aggregate(ctx context.Context, table string, query url.Values) 
 	if err := json.Unmarshal(out.Result, &single); err == nil {
 		return []Record{single}, nil
 	}
-	return nil, fmt.Errorf("unexpected stats API response shape")
+	return nil, &ProtocolError{Err: fmt.Errorf("unexpected stats API response shape")}
 }
 
 // Count returns the number of matching rows via the Aggregate API — the
@@ -404,7 +445,7 @@ func (c *Client) Count(ctx context.Context, table, encodedQuery string) (int, er
 	}
 	n, err := strconv.Atoi(out.Result.Stats.Count)
 	if err != nil {
-		return 0, fmt.Errorf("unexpected count value %q from stats API", out.Result.Stats.Count)
+		return 0, &ProtocolError{Err: fmt.Errorf("unexpected count value %q from stats API", out.Result.Stats.Count)}
 	}
 	return n, nil
 }
@@ -427,13 +468,40 @@ func apiError(statusCode int, body []byte) *APIError {
 }
 
 func retryDelay(resp *http.Response, attempt int) time.Duration {
-	if s := resp.Header.Get("Retry-After"); s != "" {
-		if secs, err := strconv.Atoi(s); err == nil && secs >= 0 {
-			return time.Duration(secs) * time.Second
+	if d, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
+		// A hostile or misconfigured server must not be able to park the
+		// CLI for hours behind a nominal timeout.
+		if d > maxRetryDelay {
+			return maxRetryDelay
 		}
+		return d
 	}
 	backoff := baseRetryWait << (attempt - 1)
+	if backoff > maxRetryDelay {
+		backoff = maxRetryDelay
+	}
 	return backoff + rand.N(backoff/2+1)
+}
+
+// parseRetryAfter reads both allowed Retry-After forms: delta-seconds and an
+// HTTP-date. A past date yields a zero wait.
+func parseRetryAfter(s string) (time.Duration, bool) {
+	if s == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(s); err == nil {
+		if secs < 0 {
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(s); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d, true
+		}
+		return 0, true
+	}
+	return 0, false
 }
 
 func decodeResponse(resp *http.Response, out any) error {
@@ -455,10 +523,10 @@ func decodeResponse(resp *http.Response, out any) error {
 		return nil
 	}
 	if len(body) > maxBodyBytes {
-		return fmt.Errorf("response exceeds glm's %d MiB buffer - lower --limit or request fewer fields", maxBodyBytes>>20)
+		return &ProtocolError{Err: fmt.Errorf("response exceeds glm's %d MiB buffer - lower --limit or request fewer fields", maxBodyBytes>>20)}
 	}
 	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("decode response: %w", err)
+		return &ProtocolError{Err: fmt.Errorf("decode response: %w", err)}
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -50,19 +51,29 @@ func newWhoamiCmd() *cobra.Command {
 				fmt.Fprintf(out, "title     %s\n", title)
 			}
 
-			rq := url.Values{}
-			rq.Set("sysparm_query", "user.user_name="+res.Profile.Username)
-			rq.Set("sysparm_fields", "role.name")
-			rq.Set("sysparm_limit", "200")
-			rq.Set("sysparm_exclude_reference_link", "true")
-			grants, err := client.Table(ctx, "sys_user_has_role", rq)
-			if err != nil {
-				return fmt.Errorf("list roles: %w", err)
-			}
+			// Roles are paginated to exhaustion: a heavily-privileged
+			// identity can exceed a single window, and reporting a capped
+			// list as the exact total would understate its authorization.
+			const rolePage = 200
 			names := map[string]bool{}
-			for _, g := range grants {
-				if n := field(g, "role.name"); n != "" {
-					names[n] = true
+			for offset := 0; ; offset += rolePage {
+				rq := url.Values{}
+				rq.Set("sysparm_query", "user.user_name="+res.Profile.Username+"^ORDERBYsys_id")
+				rq.Set("sysparm_fields", "role.name")
+				rq.Set("sysparm_limit", strconv.Itoa(rolePage))
+				rq.Set("sysparm_offset", strconv.Itoa(offset))
+				rq.Set("sysparm_exclude_reference_link", "true")
+				grants, err := client.Table(ctx, "sys_user_has_role", rq)
+				if err != nil {
+					return fmt.Errorf("list roles: %w", err)
+				}
+				for _, g := range grants {
+					if n := field(g, "role.name"); n != "" {
+						names[n] = true
+					}
+				}
+				if len(grants) < rolePage {
+					break
 				}
 			}
 			if len(names) > 0 {

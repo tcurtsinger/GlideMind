@@ -81,7 +81,30 @@ func (f *File) Save() error {
 	if err != nil {
 		return fmt.Errorf("encode config: %w", err)
 	}
-	if err := os.WriteFile(p, data, 0o600); err != nil {
+	// Write to a temp file in the same directory, then rename over the
+	// target: an interrupted or concurrent write can no longer truncate or
+	// corrupt the config — readers see either the old file or the new one.
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("write %s: %w", p, err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("write %s: %w", p, err)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("write %s: %w", p, err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("write %s: %w", p, err)
+	}
+	if err := os.Rename(tmpName, p); err != nil {
+		os.Remove(tmpName)
 		return fmt.Errorf("write %s: %w", p, err)
 	}
 	return nil

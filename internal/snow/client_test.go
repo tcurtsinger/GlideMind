@@ -134,6 +134,72 @@ func TestGetRefusesCrossOriginRedirect(t *testing.T) {
 	}
 }
 
+func TestNewBasicRejectsNonPositiveTimeout(t *testing.T) {
+	if _, err := NewBasic("https://acme.service-now.com", "u", "p", 0); err == nil {
+		t.Error("zero timeout must be rejected (it disables the client deadline)")
+	}
+}
+
+func TestParseRetryAfterForms(t *testing.T) {
+	if d, ok := parseRetryAfter("2"); !ok || d != 2*time.Second {
+		t.Errorf("delta-seconds: got %v, %v", d, ok)
+	}
+	future := time.Now().Add(3 * time.Second).UTC().Format(http.TimeFormat)
+	if d, ok := parseRetryAfter(future); !ok || d <= 0 {
+		t.Errorf("HTTP-date future: got %v, %v", d, ok)
+	}
+	past := time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)
+	if d, ok := parseRetryAfter(past); !ok || d != 0 {
+		t.Errorf("HTTP-date past should be zero wait: got %v, %v", d, ok)
+	}
+	if _, ok := parseRetryAfter("soon"); ok {
+		t.Error("garbage Retry-After must not parse")
+	}
+}
+
+func TestRetryDelayCapped(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("Retry-After", "99999")
+	if d := retryDelay(resp, 1); d != maxRetryDelay {
+		t.Errorf("a huge Retry-After must cap at %s, got %s", maxRetryDelay, d)
+	}
+}
+
+func TestRawPreservesEscapedPath(t *testing.T) {
+	var gotURI string
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURI = r.RequestURI
+		w.Write([]byte(`{}`)) //nolint:errcheck
+	}))
+	if _, err := c.Raw(context.Background(), http.MethodGet, "/api/x/a%2Fb", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotURI, "a%2Fb") {
+		t.Errorf("escaped slash was re-encoded or decoded: %q", gotURI)
+	}
+}
+
+func TestRawRejectsAbsolutePath(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	if _, err := c.Raw(context.Background(), http.MethodGet, "http://evil.example/x", nil, nil); err == nil {
+		t.Error("an absolute URL as the request path must be rejected")
+	}
+}
+
+func TestMalformedJSONIsProtocolError(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{not json`)) //nolint:errcheck
+	}))
+	_, err := c.Table(context.Background(), "incident", nil)
+	var pe *ProtocolError
+	if !errors.As(err, &pe) {
+		t.Fatalf("malformed 200 body should be a ProtocolError, got %T", err)
+	}
+	if pe.ExitCode() != exit.API {
+		t.Errorf("ProtocolError must map to exit %d, got %d", exit.API, pe.ExitCode())
+	}
+}
+
 func newTestClient(t *testing.T, handler http.Handler) (*Client, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(handler)

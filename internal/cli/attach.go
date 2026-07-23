@@ -43,6 +43,12 @@ func newAttachListCmd() *cobra.Command {
 			if err := encodedQueryValue("table", table); err != nil {
 				return err
 			}
+			if err := requirePositive("limit", limit); err != nil {
+				return err
+			}
+			if err := requireNonNeg("offset", offset); err != nil {
+				return err
+			}
 			client, _, err := clientFor(cmd, "")
 			if err != nil {
 				return err
@@ -63,7 +69,9 @@ func newAttachListCmd() *cobra.Command {
 			}
 
 			q := url.Values{}
-			q.Set("sysparm_query", "table_name="+table+"^table_sys_id="+sysID+"^ORDERBYfile_name")
+			// sys_id tiebreaker: file_name is not unique, so a stable second
+			// sort key keeps offset pages from skipping or repeating rows.
+			q.Set("sysparm_query", "table_name="+table+"^table_sys_id="+sysID+"^ORDERBYfile_name^ORDERBYsys_id")
 			q.Set("sysparm_fields", strings.Join(attachFields, ","))
 			q.Set("sysparm_limit", strconv.Itoa(limit))
 			if offset > 0 {
@@ -140,33 +148,62 @@ func newAttachGetCmd() *cobra.Command {
 			}
 
 			target := dest
+			overwrite := true
 			if target == "" {
 				target = name
-				// A derived name never overwrites; an explicit -o does.
-				if _, err := os.Stat(target); err == nil {
-					return fmt.Errorf("%s already exists - pass -o <path> to choose a destination", target)
-				}
+				overwrite = false // a derived name never clobbers
 			} else if info, err := os.Stat(target); err == nil && info.IsDir() {
 				target = filepath.Join(target, name)
 			}
 
-			// Download into a sibling temp file and rename only on success —
-			// a failed download must never truncate an existing target.
-			f, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".glm*")
-			if err != nil {
-				return err
-			}
-			tmp := f.Name()
-			n, err := client.DownloadAttachment(ctx, id, f)
-			if cerr := f.Close(); err == nil {
-				err = cerr
-			}
-			if err == nil {
-				err = os.Rename(tmp, target)
-			}
-			if err != nil {
+			var n int64
+			if overwrite {
+				// Explicit -o allows overwrite, but a failed download must not
+				// truncate the existing target: stream to a sibling temp and
+				// rename over it only on success.
+				f, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".glm*")
+				if err != nil {
+					return err
+				}
+				tmp := f.Name()
+				n, err = client.DownloadAttachment(ctx, id, f)
+				if cerr := f.Close(); err == nil {
+					err = cerr
+				}
+				if err == nil {
+					err = os.Rename(tmp, target)
+				}
+				if err != nil {
+					os.Remove(tmp) //nolint:errcheck
+					return err
+				}
+			} else {
+				// Derived name: stream to a sibling temp so an interrupted
+				// download never leaves a partial under the real name, then
+				// claim the final name with a hard link. os.Link fails atomically
+				// if the target already exists — no clobber and no stat/rename
+				// race, while crash-safety is preserved.
+				f, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".glm*")
+				if err != nil {
+					return err
+				}
+				tmp := f.Name()
+				n, err = client.DownloadAttachment(ctx, id, f)
+				if cerr := f.Close(); err == nil {
+					err = cerr
+				}
+				if err != nil {
+					os.Remove(tmp) //nolint:errcheck
+					return err
+				}
+				linkErr := os.Link(tmp, target)
 				os.Remove(tmp) //nolint:errcheck
-				return err
+				if linkErr != nil {
+					if os.IsExist(linkErr) {
+						return fmt.Errorf("%s already exists - pass -o <path> to choose a destination", target)
+					}
+					return linkErr
+				}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), target)
 			summary(n)

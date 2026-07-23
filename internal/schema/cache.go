@@ -2,6 +2,8 @@ package schema
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/url"
 	"os"
@@ -47,15 +49,23 @@ func NewStore(client *snow.Client) (*Store, error) {
 	if u, err := url.Parse(client.BaseURL()); err == nil && u.Host != "" {
 		host = strings.ReplaceAll(u.Host, ":", "_")
 	}
-	identity := safeSegment(client.Username())
-	if identity == "" {
-		identity = "anonymous"
-	}
+	// The identity segment must not collide across users: dictionary rows
+	// are ACL-filtered, so one identity's metadata must never key another's.
+	// safeSegment alone is lossy (svc.user and svc_user both map to
+	// svc_user), so pair the readable prefix with a digest of the exact
+	// origin+username.
+	identity := safeSegment(client.Username()) + "-" + digest(client.BaseURL()+"\x00"+client.Username())
 	return &Store{
 		Client: client,
 		Dir:    filepath.Join(base, "glidemind", "schema", host, identity),
 		TTL:    DefaultTTL,
 	}, nil
+}
+
+// digest returns a short collision-resistant hex tag for s.
+func digest(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:6])
 }
 
 type cacheEntry struct {

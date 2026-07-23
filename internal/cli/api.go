@@ -70,13 +70,15 @@ func newAPICmd() *cobra.Command {
 			}
 
 			if method != http.MethodGet {
-				// Write paths always show exactly what would be sent.
+				// Show exactly what will go on the wire — the same URL Raw
+				// builds, so an approved --yes write matches the preview even
+				// when the path carries its own query string.
 				errOut := cmd.ErrOrStderr()
-				target := path
-				if len(q) > 0 {
-					target += "?" + q.Encode()
+				target, err := client.PreviewURL(path, q)
+				if err != nil {
+					return err
 				}
-				fmt.Fprintf(errOut, "%s %s%s\n", method, client.BaseURL(), target)
+				fmt.Fprintf(errOut, "%s %s\n", method, target)
 				if len(payload) > 0 {
 					fmt.Fprintf(errOut, "%s\n", payload)
 				}

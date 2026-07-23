@@ -68,6 +68,12 @@ func newGrepCmd() *cobra.Command {
 			if err := encodedQueryValue("--scope", scope); err != nil {
 				return err
 			}
+			if err := requirePositive("limit", limit); err != nil {
+				return err
+			}
+			if err := requirePositive("max-matches", maxMatches); err != nil {
+				return err
+			}
 			sinceQ := ""
 			if since != "" {
 				var err error
@@ -192,17 +198,31 @@ func newGrepCmd() *cobra.Command {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			lineCount := 0
+			// Counts come from the match set, not the renderer, so every
+			// format reports the same totals. Records dedupe by sys_id: one
+			// record matching two fields (sys_ui_policy) is still one record.
+			totalLines := 0
+			seenRec := map[string]bool{}
+			for _, m := range matches {
+				totalLines += len(m.lines)
+				if m.sysID != "" {
+					seenRec[m.sysID] = true
+				}
+			}
 			switch format {
 			case "ids":
+				emitted := map[string]bool{}
 				for _, m := range matches {
+					if m.sysID == "" || emitted[m.sysID] {
+						continue
+					}
+					emitted[m.sysID] = true
 					fmt.Fprintln(out, m.sysID)
 				}
 			case "json", "jsonl":
 				objs := make([]map[string]any, 0, len(matches))
 				for _, m := range matches {
 					for _, l := range m.lines {
-						lineCount++
 						objs = append(objs, map[string]any{
 							"table": m.target.table, "field": m.target.field,
 							"sys_id": m.sysID, "name": m.name,
@@ -227,7 +247,6 @@ func newGrepCmd() *cobra.Command {
 			default:
 				for _, m := range matches {
 					for _, l := range m.lines {
-						lineCount++
 						fmt.Fprintf(out, "%s:%s:%d: %s\n", m.target.table, m.name, l.number, l.text)
 					}
 					if m.more > 0 {
@@ -245,7 +264,7 @@ func newGrepCmd() *cobra.Command {
 				}
 			}
 			fmt.Fprintf(errOut, "%d matching lines in %d records - searched %s\n",
-				lineCount, len(matches), strings.Join(searched, ", "))
+				totalLines, len(seenRec), strings.Join(searched, ", "))
 			for _, table := range capped {
 				fmt.Fprintf(errOut, "%s hit the %d-record cap - raise --limit\n", table, limit)
 			}

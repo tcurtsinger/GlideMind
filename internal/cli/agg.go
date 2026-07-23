@@ -33,6 +33,9 @@ func newAggCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			table := args[0]
+			if err := requireNonNeg("top", top); err != nil {
+				return err
+			}
 			client, _, err := clientFor(cmd, "")
 			if err != nil {
 				return err
