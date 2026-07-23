@@ -27,7 +27,9 @@ func TestWhoamiEndToEnd(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv(config.EnvProfile, "")
+	// Isolate the config dir: with GLM_INSTANCE selection, any real profiles
+	// on the developer's machine would flip the instance stamp on.
+	pointConfigAt(t)
 	t.Setenv(config.EnvInstance, srv.URL)
 	t.Setenv(config.EnvUsername, "svc.glm")
 	t.Setenv(secret.EnvPassword, "pw")

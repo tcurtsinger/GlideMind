@@ -65,9 +65,12 @@ func newProfileAddCmd() *cobra.Command {
 				Auth:     "basic",
 				Username: username,
 			}
-			if f.Default == "" {
-				f.Default = name
-			}
+			// Deliberately no auto-default: with one profile it is implicit
+			// anyway, and a sticky default armed here would silently route
+			// commands to the first-added instance the moment a second one
+			// exists — the wrong-instance leak DESIGN-INSTANCES.md I1 closes.
+			// A default is only ever set explicitly via `glm profile use`.
+			clearedDefault := clearLegacyDefault(f, existed)
 			// add is otherwise non-transactional: capture any prior credential
 			// so a failed config save can roll the keyring back instead of
 			// leaving the old instance/username paired with a new password.
@@ -91,6 +94,12 @@ func newProfileAddCmd() *cobra.Command {
 				verb = "updated"
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "profile %q %s (%s as %s)\n", name, verb, base.String(), username)
+			switch {
+			case clearedDefault != "":
+				fmt.Fprintf(cmd.ErrOrStderr(), "cleared implicit default %q — commands now require -p <name> (restore: glm profile use %s)\n", clearedDefault, clearedDefault)
+			case len(f.Profiles) >= 2 && f.Default == "":
+				fmt.Fprintf(cmd.ErrOrStderr(), "%d profiles configured — commands now require -p <name> (or set a default: glm profile use <name>)\n", len(f.Profiles))
+			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "try: glm profile test %s\n", name)
 			return nil
 		},
@@ -101,6 +110,23 @@ func newProfileAddCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("instance")
 	_ = cmd.MarkFlagRequired("username")
 	return cmd
+}
+
+// clearLegacyDefault migrates configs written when `profile add` still
+// auto-defaulted the first profile: when this add takes the config from one
+// profile to two and a default is set, the default is cleared (and returned
+// for messaging). A default set while only one profile existed never had an
+// observable effect — the single-profile fallback covered it — so nothing
+// deliberate is lost, and keeping it would silently preserve the
+// wrong-instance path DESIGN-INSTANCES.md I1 closes. Defaults chosen in an
+// already-multi-profile world are deliberate and stay.
+func clearLegacyDefault(f *config.File, existed bool) string {
+	if existed || len(f.Profiles) != 2 || f.Default == "" {
+		return ""
+	}
+	old := f.Default
+	f.Default = ""
+	return old
 }
 
 func readPassword(cmd *cobra.Command, fromStdin bool) (string, error) {
@@ -164,16 +190,35 @@ func newProfileListCmd() *cobra.Command {
 }
 
 func newProfileUseCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "use <name>",
-		Short: "Set the default profile",
-		Args:  cobra.ExactArgs(1),
+	var clear bool
+	cmd := &cobra.Command{
+		Use:   "use <name> | --clear",
+		Short: "Set or clear the default profile",
+		Long: "Sets the profile used when -p is omitted. With several profiles\n" +
+			"configured this is a deliberate opt-out of glm's refuse-to-guess\n" +
+			"rule — every command still stamps the instance it ran against.\n" +
+			"--clear removes the default, making -p required again.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
 			f, err := config.Load()
 			if err != nil {
 				return err
 			}
+			if clear {
+				if len(args) != 0 {
+					return fmt.Errorf("--clear takes no profile name")
+				}
+				f.Default = ""
+				if err := f.Save(); err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "default profile cleared")
+				return nil
+			}
+			if len(args) != 1 {
+				return fmt.Errorf("usage: glm profile use <name> (or --clear)")
+			}
+			name := args[0]
 			if _, ok := f.Profiles[name]; !ok {
 				return fmt.Errorf("profile %q not found (have: %v)", name, f.Names())
 			}
@@ -185,6 +230,8 @@ func newProfileUseCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&clear, "clear", false, "remove the default profile so -p is required")
+	return cmd
 }
 
 func newProfileTestCmd() *cobra.Command {

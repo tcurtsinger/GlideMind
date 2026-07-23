@@ -274,6 +274,11 @@ func runGlm(t *testing.T, srv *httptest.Server, stdin string, args ...string) (s
 func runGlmErr(t *testing.T, srv *httptest.Server, stdin string, args ...string) (string, string, error) {
 	t.Helper()
 	isolateCache(t)
+	// Isolate the config file too: commands that read it (prime's profile
+	// line) must see the test's world, not the developer's real profiles.
+	confDir := t.TempDir()
+	t.Setenv("APPDATA", confDir)
+	t.Setenv("XDG_CONFIG_HOME", confDir)
 	t.Setenv(config.EnvProfile, "")
 	t.Setenv(config.EnvInstance, srv.URL)
 	t.Setenv(config.EnvUsername, "svc.glm")

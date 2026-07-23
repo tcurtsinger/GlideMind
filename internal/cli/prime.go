@@ -6,6 +6,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
+
+	"github.com/tcurtsinger/GlideMind/internal/config"
+	"github.com/tcurtsinger/GlideMind/internal/output"
 )
 
 func newPrimeCmd() *cobra.Command {
@@ -41,6 +44,9 @@ func newPrimeCmd() *cobra.Command {
 				}
 			}
 			fmt.Fprintln(out, "glm - ServiceNow CLI built for context economy. Data on stdout; summaries, pagination, warnings on stderr.")
+			if line := profileLine(); line != "" {
+				fmt.Fprintln(out, output.SanitizeLine(line))
+			}
 			for _, l := range lines {
 				fmt.Fprintf(out, "%-*s  # %s\n", width, l[0], l[1])
 			}
@@ -54,11 +60,38 @@ Conventions:
 - agg: --group-by <field> [--sum f|--avg f|--min f|--max f] - count is implied.
 - Truncated values end in a marker; --full lifts caps. grep's remainder marker names the exact glm get to run.
 - Discover: glm tables <pattern>, then glm schema <table>. Errors suggest corrections.
-- get keys: sys_id, record number, or display value. --profile/-p picks the instance.
+- get keys: sys_id, record number, or display value. --profile/-p picks the instance (required with 2+ profiles).
 `)
 			return nil
 		},
 	}
+}
+
+// profileLine renders the configured instances so an agent's first command
+// of the session establishes what exists and whether -p is required
+// (DESIGN-INSTANCES.md I4). Empty when nothing is configured or the config
+// is unreadable — prime stays useful either way.
+func profileLine() string {
+	f, err := config.Load()
+	if err != nil || len(f.Profiles) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(f.Profiles))
+	for _, name := range f.Names() {
+		marker := ""
+		if name == f.Default {
+			marker = "*" // the default when -p is omitted
+		}
+		parts = append(parts, fmt.Sprintf("%s%s (%s)", name, marker, strings.TrimPrefix(f.Profiles[name].Instance, "https://")))
+	}
+	if len(f.Profiles) == 1 {
+		return "Profile: " + parts[0]
+	}
+	note := " - pass -p <name> on every command"
+	if f.Default != "" {
+		note = " - * is used when -p is omitted"
+	}
+	return "Profiles: " + strings.Join(parts, ", ") + note
 }
 
 // synopsis renders a command's full invocation line, e.g.

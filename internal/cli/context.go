@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/tcurtsinger/GlideMind/internal/config"
+	"github.com/tcurtsinger/GlideMind/internal/output"
 	"github.com/tcurtsinger/GlideMind/internal/schema"
 	"github.com/tcurtsinger/GlideMind/internal/secret"
 	"github.com/tcurtsinger/GlideMind/internal/snow"
@@ -23,6 +25,17 @@ func clientFor(cmd *cobra.Command, flagName string) (*snow.Client, *config.Resol
 	res, err := config.Resolve(name)
 	if err != nil {
 		return nil, nil, err
+	}
+	// With several profiles configured, stamp which instance this command
+	// runs against (DESIGN-INSTANCES.md I3): stderr keeps pipes clean, and
+	// the transcript proves where every answer came from. Selection sources
+	// other than the -p flag are invisible state, so they are named too.
+	if res.Multi {
+		stamp := fmt.Sprintf("instance: %s (%s)", res.Name, strings.TrimPrefix(res.Profile.Instance, "https://"))
+		if res.Source != config.SourceFlag {
+			stamp += " [" + res.Source + "]"
+		}
+		fmt.Fprintln(cmd.ErrOrStderr(), output.SanitizeLine(stamp))
 	}
 	if res.Profile.Auth != "" && res.Profile.Auth != "basic" {
 		return nil, nil, fmt.Errorf("profile %q: auth method %q is not supported yet (v1 supports: basic)", res.Name, res.Profile.Auth)
