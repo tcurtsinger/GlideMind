@@ -174,18 +174,68 @@ func TestAPINestedResultRendersAsJSON(t *testing.T) {
 	}
 }
 
-func TestAPIFullLiftsTruncation(t *testing.T) {
+func TestAPIMachineOutputIsFaithful(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)
 	long := strings.Repeat("x", 2500)
 
-	stdout, _ := runGlm(t, srv, "", "api", "GET", "/api/now/table/long_story", "--json")
-	if strings.Contains(stdout, long) || !strings.Contains(stdout, "use --full") {
-		t.Errorf("default output should truncate with the --full remedy:\n%.200s", stdout)
+	// Machine formats are a raw passthrough: no truncation marker injected
+	// into a JSON value, with or without --full.
+	for _, args := range [][]string{
+		{"api", "GET", "/api/now/table/long_story", "--json"},
+		{"api", "GET", "/api/now/table/long_story", "--format", "json"},
+		{"api", "GET", "/api/now/table/long_story", "--json", "--full"},
+	} {
+		stdout, _ := runGlm(t, srv, "", args...)
+		if !strings.Contains(stdout, long) {
+			t.Errorf("%v: machine output must be faithful (no truncation):\n%.120s", args, stdout)
+		}
+		if strings.Contains(stdout, "use --full") {
+			t.Errorf("%v: machine output must not inject a truncation marker into JSON", args)
+		}
 	}
-	stdout, _ = runGlm(t, srv, "", "api", "GET", "/api/now/table/long_story", "--json", "--full")
-	if !strings.Contains(stdout, long) {
-		t.Errorf("--full must lift truncation:\n%.200s", stdout)
+}
+
+func TestAPITrailingBytesPassThroughVerbatim(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	// A first JSON value followed by appended bytes is not a clean
+	// document; the whole body must survive, tail included.
+	stdout, _ := runGlm(t, srv, "", "api", "GET", "/api/now/table/trailing")
+	if !strings.Contains(stdout, "then junk") {
+		t.Errorf("trailing bytes were dropped instead of passed through:\n%s", stdout)
+	}
+}
+
+func TestAPIJSONFidelity(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	// H-03: a raw passthrough must not change types, round large integers,
+	// drop nulls, or discard fields alongside a value/display_value pair.
+	for _, format := range []string{"json", "jsonl"} {
+		stdout, _ := runGlm(t, srv, "", "api", "GET", "/api/now/table/fidelity", "--format", format)
+		var got map[string]any
+		dec := json.NewDecoder(strings.NewReader(stdout))
+		dec.UseNumber()
+		if err := dec.Decode(&got); err != nil {
+			t.Fatalf("%s: not valid JSON: %v\n%s", format, err, stdout)
+		}
+		if n, ok := got["big"].(json.Number); !ok || n.String() != "9007199254740993" {
+			t.Errorf("%s: large integer lost precision: %v", format, got["big"])
+		}
+		if b, ok := got["flag"].(bool); !ok || b != true {
+			t.Errorf("%s: boolean coerced to string: %v", format, got["flag"])
+		}
+		if v, present := got["empty"]; !present || v != nil {
+			t.Errorf("%s: null field dropped or altered: present=%v v=%v", format, present, v)
+		}
+		// A reference-shaped object carrying extra keys must keep them.
+		ref, ok := got["ref"].(map[string]any)
+		if !ok || ref["extra"] == nil {
+			t.Errorf("%s: nested field alongside value/display_value was dropped: %v", format, got["ref"])
+		}
 	}
 }
 

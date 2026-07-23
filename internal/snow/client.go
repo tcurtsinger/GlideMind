@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -21,6 +22,7 @@ const (
 	maxAttempts   = 3
 	baseRetryWait = 500 * time.Millisecond
 	maxBodyBytes  = 8 << 20
+	maxRedirects  = 5
 )
 
 // Record is one row from the Table API. Value types depend on the
@@ -54,6 +56,22 @@ func NormalizeInstance(s string) (*url.URL, error) {
 	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("invalid instance %q", s)
 	}
+	// A credential embedded in the URL (user:pass@host) would be persisted
+	// to config.toml and echoed in output — never accept it silently.
+	if u.User != nil {
+		return nil, fmt.Errorf("instance URL must not embed credentials (user:password@…) — set the username on the profile and supply the password via the keyring or GLM_PASSWORD")
+	}
+	// Basic auth over plaintext exposes the credential on the wire. Require
+	// https; allow http only for loopback dev instances.
+	switch u.Scheme {
+	case "https":
+	case "http":
+		if !isLoopback(u.Hostname()) {
+			return nil, fmt.Errorf("refusing plaintext http for %q — use https (http is allowed only for loopback dev instances)", u.Host)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported scheme %q in instance %q — use https", u.Scheme, s)
+	}
 	// Users paste browser URLs (e.g. .../nav_to.do?uri=...). The REST API
 	// always lives at the host root, so drop any path outright — keeping it
 	// would silently aim every request at /nav_to.do/api/now/....
@@ -61,6 +79,17 @@ func NormalizeInstance(s string) (*url.URL, error) {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u, nil
+}
+
+// isLoopback reports whether host is localhost or a loopback IP literal.
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // NewBasic builds a client for one instance using basic auth.
@@ -74,10 +103,46 @@ func NewBasic(instance, username, password string, timeout time.Duration) (*Clie
 	}
 	return &Client{
 		base:     u,
-		hc:       &http.Client{Timeout: timeout},
+		hc:       &http.Client{Timeout: timeout, CheckRedirect: secureRedirect},
 		username: username,
 		password: password,
 	}, nil
+}
+
+// secureRedirect is the client's redirect policy. Non-GET requests never
+// follow a redirect: a 307/308 would replay the write body to a new
+// location (breaking the "exactly once on the wire" contract the --yes
+// preview promises) and a 301/302/303 would silently drop it — so the 3xx
+// is surfaced to the caller instead. GET follows only same-origin hops,
+// which keeps the Basic credential on the exact configured host and blocks
+// any https→http downgrade.
+func secureRedirect(req *http.Request, via []*http.Request) error {
+	orig := via[0]
+	if orig.Method != http.MethodGet {
+		return http.ErrUseLastResponse
+	}
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	if !sameOrigin(orig.URL, req.URL) {
+		return fmt.Errorf("refusing redirect off the configured origin (%s → %s)", orig.URL.Host, req.URL.Host)
+	}
+	return nil
+}
+
+// sameOrigin compares scheme, host, and effective port.
+func sameOrigin(a, b *url.URL) bool {
+	return a.Scheme == b.Scheme && a.Hostname() == b.Hostname() && effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
 }
 
 // SetLogf installs a --verbose logger; nil disables logging.
