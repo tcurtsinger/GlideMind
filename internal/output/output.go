@@ -82,6 +82,17 @@ func oneLine(s string) string {
 	}, s)
 }
 
+// sanitizeFields returns a display-safe copy of column names for human
+// output — glm api derives headers/labels from untrusted response keys.
+// Callers keep the original names for value lookup.
+func sanitizeFields(fields []string) []string {
+	out := make([]string, len(fields))
+	for i, f := range fields {
+		out[i] = oneLine(f)
+	}
+	return out
+}
+
 // SanitizeLine makes server-controlled text safe for a single-line status
 // context (grep match lines, attachment summaries): it strips control
 // characters AND folds tab/newline/CR to spaces, so an embedded newline or
@@ -135,7 +146,7 @@ func Records(w io.Writer, fields []string, recs []map[string]any, opts Options) 
 
 	case "csv":
 		cw := csv.NewWriter(w)
-		if err := cw.Write(fields); err != nil {
+		if err := cw.Write(sanitizeFields(fields)); err != nil {
 			return err
 		}
 		for _, r := range recs {
@@ -185,7 +196,10 @@ func Records(w io.Writer, fields []string, recs []map[string]any, opts Options) 
 
 func tabularRows(fields []string, recs []map[string]any, opts Options) [][]string {
 	rows := make([][]string, 0, len(recs)+1)
-	rows = append(rows, fields)
+	// Header names are display strings too — glm api derives them from
+	// untrusted response keys, so sanitize the shown copy (the original
+	// field name is still used below to look up values).
+	rows = append(rows, sanitizeFields(fields))
 	for _, r := range recs {
 		row := make([]string, len(fields))
 		for i, f := range fields {
@@ -270,7 +284,7 @@ func RecordDetail(w io.Writer, rec map[string]any, fields []string, opts Options
 		}
 	}
 	for _, k := range fields {
-		fmt.Fprintf(w, "%-*s  %s\n", width, k, sanitizeControls(TruncateField(Value(rec, k), opts.Full)))
+		fmt.Fprintf(w, "%-*s  %s\n", width, SanitizeLine(k), sanitizeControls(TruncateField(Value(rec, k), opts.Full)))
 	}
 	return nil
 }

@@ -43,6 +43,26 @@ func TestSanitizeLineFlattensAndStrips(t *testing.T) {
 	}
 }
 
+func TestHumanFormatSanitizesFieldNames(t *testing.T) {
+	// glm api derives column names from untrusted response keys; a hostile
+	// key must not emit terminal controls as a header or detail label.
+	evilKey := "col\x1b]0;pwned\x07"
+	rec := []map[string]any{{evilKey: "v", "sys_id": "s"}}
+	for _, format := range []string{"table", "tsv", "csv"} {
+		out := render(t, format, []string{evilKey}, rec, false)
+		if strings.ContainsRune(out, 0x1b) || strings.ContainsRune(out, 0x07) {
+			t.Errorf("%s: control chars in field name reached output: %q", format, out)
+		}
+	}
+	var buf bytes.Buffer
+	if err := RecordDetail(&buf, map[string]any{evilKey: "v"}, []string{evilKey}, Options{Format: "table"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsRune(buf.String(), 0x1b) {
+		t.Errorf("detail label must be sanitized: %q", buf.String())
+	}
+}
+
 func TestMachineFormatsStayLossless(t *testing.T) {
 	// json/jsonl must not sanitize: control bytes are encoded (not replaced
 	// with U+FFFD), so they round-trip byte-for-byte.
