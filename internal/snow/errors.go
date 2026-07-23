@@ -43,3 +43,13 @@ type NetworkError struct{ Err error }
 func (e *NetworkError) Error() string { return "network: " + e.Err.Error() }
 func (e *NetworkError) Unwrap() error { return e.Err }
 func (e *NetworkError) ExitCode() int { return exit.Network }
+
+// ProtocolError is a 2xx response the client could not make sense of:
+// malformed JSON, an unexpected shape, or an oversized body. It is the
+// server/proxy's fault, not the caller's, so it maps to exit 3 (API) rather
+// than the exit 1 default for unknown errors.
+type ProtocolError struct{ Err error }
+
+func (e *ProtocolError) Error() string { return e.Err.Error() }
+func (e *ProtocolError) Unwrap() error { return e.Err }
+func (e *ProtocolError) ExitCode() int { return exit.API }

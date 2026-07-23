@@ -19,6 +19,12 @@ func newTablesCmd() *cobra.Command {
 			"  glm tables u_          # custom tables",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requirePositive("limit", limit); err != nil {
+				return err
+			}
+			if err := requireNonNeg("offset", offset); err != nil {
+				return err
+			}
 			client, _, err := clientFor(cmd, "")
 			if err != nil {
 				return err

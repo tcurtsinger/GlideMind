@@ -87,7 +87,13 @@ func Records(w io.Writer, fields []string, recs []map[string]any, opts Options) 
 	switch opts.Format {
 	case "ids":
 		for _, r := range recs {
-			fmt.Fprintln(w, Value(r, "sys_id"))
+			id := Value(r, "sys_id")
+			if id == "" {
+				// A blank line is a broken pipe key, not an ID. Fail loudly
+				// (e.g. schema's synthesized rows have no sys_id).
+				return fmt.Errorf("--format ids is unavailable here: these records have no sys_id")
+			}
+			fmt.Fprintln(w, id)
 		}
 		return nil
 

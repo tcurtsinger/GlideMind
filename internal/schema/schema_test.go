@@ -14,6 +14,26 @@ import (
 	"github.com/tcurtsinger/GlideMind/internal/snow"
 )
 
+func TestCacheKeyDistinguishesSimilarUsernames(t *testing.T) {
+	t.Setenv(EnvCacheDir, t.TempDir())
+	dirFor := func(user string) string {
+		c, err := snow.NewBasic("https://acme.service-now.com", user, "p", 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := NewStore(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.Dir
+	}
+	// safeSegment maps both of these to "svc_user"; the digest must keep
+	// their ACL-filtered caches apart.
+	if a, b := dirFor("svc.user"), dirFor("svc_user"); a == b {
+		t.Errorf("collision: both usernames share cache dir %s", a)
+	}
+}
+
 func fakeInstance(t *testing.T) *snow.Client {
 	t.Helper()
 	mux := http.NewServeMux()

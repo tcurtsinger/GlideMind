@@ -138,7 +138,7 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 		if v := r.URL.Query().Get("sysparm_offset"); v != "" {
 			bump("attach-offset-" + v)
 		}
-		if r.URL.Query().Get("sysparm_query") != "table_name=incident^table_sys_id="+sysIDa+"^ORDERBYfile_name" {
+		if r.URL.Query().Get("sysparm_query") != "table_name=incident^table_sys_id="+sysIDa+"^ORDERBYfile_name^ORDERBYsys_id" {
 			writeResult(w, []map[string]any{})
 			return
 		}
@@ -191,9 +191,26 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 		id := strings.TrimPrefix(r.URL.Path, "/api/now/table/incident/")
 		writeResult(w, incidentRow(id, "INC0000001", "Printer on fire"))
 	})
+	mux.HandleFunc("/api/now/table/sys_user", func(w http.ResponseWriter, r *http.Request) {
+		bump("whoami-user")
+		writeResult(w, []map[string]any{{"user_name": "svc.glm", "name": "SVC GLM"}})
+	})
+	mux.HandleFunc("/api/now/table/sys_user_has_role", func(w http.ResponseWriter, r *http.Request) {
+		bump("whoami-roles")
+		off, _ := strconv.Atoi(r.URL.Query().Get("sysparm_offset"))
+		// 250 grants across two 200-row pages, to exercise pagination.
+		var rows []map[string]any
+		for i := off; i < off+200 && i < 250; i++ {
+			rows = append(rows, map[string]any{"role.name": "role_" + strconv.Itoa(i)})
+		}
+		writeResult(w, rows)
+	})
 	mux.HandleFunc("/api/now/table/incident", func(w http.ResponseWriter, r *http.Request) {
 		bump("list")
 		q := r.URL.Query().Get("sysparm_query")
+		if strings.Contains(q, "ORDERBYsys_id") {
+			bump("stable-sort")
+		}
 		if strings.Contains(q, "number=INC0000001") {
 			writeResult(w, []map[string]any{incidentRow(sysIDa, "INC0000001", "Printer on fire")})
 			return

@@ -68,10 +68,20 @@ func newProfileAddCmd() *cobra.Command {
 			if f.Default == "" {
 				f.Default = name
 			}
+			// add is otherwise non-transactional: capture any prior credential
+			// so a failed config save can roll the keyring back instead of
+			// leaving the old instance/username paired with a new password.
+			oldPw, getErr := secret.Get(name)
+			hadOld := getErr == nil
 			if err := secret.Set(name, password); err != nil {
 				return err
 			}
 			if err := f.Save(); err != nil {
+				if hadOld {
+					_ = secret.Set(name, oldPw)
+				} else {
+					_ = secret.Delete(name)
+				}
 				return err
 			}
 
@@ -98,7 +108,10 @@ func readPassword(cmd *cobra.Command, fromStdin bool) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read password from stdin: %w", err)
 		}
-		pw := strings.TrimRight(string(data), "\r\n")
+		// Strip the UTF-8 BOM a PowerShell pipe prepends before trimming the
+		// line ending — otherwise the stored password carries U+FEFF and
+		// fails auth immediately (matches the batch-key and api-body paths).
+		pw := strings.TrimRight(strings.TrimPrefix(string(data), "\ufeff"), "\r\n")
 		if pw == "" {
 			return "", fmt.Errorf("empty password on stdin")
 		}
