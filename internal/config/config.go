@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
 )
@@ -120,12 +121,21 @@ func (f *File) Names() []string {
 	return names
 }
 
+// SourceFlag is the Resolved.Source value for explicit --profile selection.
+// Other sources (env, config default) represent invisible state, so callers
+// annotate output with them; the flag is already visible in the command line.
+const SourceFlag = "--profile flag"
+
 // Resolved is the chosen profile plus where it came from, for --verbose and
 // error messages.
 type Resolved struct {
 	Name    string
 	Source  string
 	Profile Profile
+	// Multi is true when two or more profiles are configured — the situation
+	// where a wrong-instance call is possible and commands stamp which
+	// instance they ran against (DESIGN-INSTANCES.md I3).
+	Multi bool
 }
 
 // Resolve picks the active profile. Precedence:
@@ -133,7 +143,7 @@ type Resolved struct {
 //	--profile flag > GLM_PROFILE > GLM_INSTANCE (pure-env profile)
 //	> config default > the only configured profile.
 func Resolve(flagName string) (*Resolved, error) {
-	name, source := flagName, "--profile flag"
+	name, source := flagName, SourceFlag
 	if name == "" {
 		name, source = os.Getenv(EnvProfile), EnvProfile+" env"
 	}
@@ -163,6 +173,11 @@ func Resolve(flagName string) (*Resolved, error) {
 			name, source = f.Default, "config default"
 		case len(f.Profiles) == 1:
 			name, source = f.Names()[0], "only configured profile"
+		case len(f.Profiles) >= 2:
+			// Refuse to guess between instances: a silently-picked wrong
+			// instance is the failure mode this tool exists to eliminate
+			// (DESIGN-INSTANCES.md I1). The caller self-heals from the list.
+			return nil, fmt.Errorf("multiple profiles configured (%s) — pass -p <name>, or make one implicit with `glm profile use <name>`", strings.Join(f.Names(), ", "))
 		default:
 			return nil, fmt.Errorf("no profile selected — run `glm profile add <name> --instance <url> --username <user>`, pass --profile, or set %s/%s/%s", EnvInstance, EnvUsername, "GLM_PASSWORD")
 		}
@@ -178,5 +193,5 @@ func Resolve(flagName string) (*Resolved, error) {
 	if u := os.Getenv(EnvUsername); u != "" {
 		p.Username = u
 	}
-	return &Resolved{Name: name, Source: source, Profile: p}, nil
+	return &Resolved{Name: name, Source: source, Profile: p, Multi: len(f.Profiles) >= 2}, nil
 }

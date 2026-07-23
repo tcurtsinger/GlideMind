@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -155,5 +156,61 @@ func TestResolveNothingConfigured(t *testing.T) {
 	pointConfigAt(t)
 	if _, err := Resolve(""); err == nil {
 		t.Fatal("expected error with no profiles at all")
+	}
+}
+
+// TestResolveMultiProfileNoDefaultRefusesToGuess pins DESIGN-INSTANCES.md I1:
+// with several profiles and no explicit selection, glm must not silently pick
+// one — the error lists the candidates so a caller self-heals in one turn.
+func TestResolveMultiProfileNoDefaultRefusesToGuess(t *testing.T) {
+	pointConfigAt(t)
+	write(t, &File{
+		Profiles: map[string]Profile{
+			"dev":       {Instance: "https://dev.service-now.com", Username: "a"},
+			"smartwork": {Instance: "https://sw.service-now.com", Username: "b"},
+		},
+	})
+
+	_, err := Resolve("")
+	if err == nil {
+		t.Fatal("expected refusal with 2 profiles and no default")
+	}
+	for _, want := range []string{"dev", "smartwork", "-p <name>", "glm profile use"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
+	}
+}
+
+// TestResolvedMulti pins the stamp trigger: Multi reflects whether 2+
+// profiles are configured, regardless of how the profile was selected.
+func TestResolvedMulti(t *testing.T) {
+	pointConfigAt(t)
+	write(t, &File{
+		Profiles: map[string]Profile{
+			"dev": {Instance: "https://dev.service-now.com", Username: "a"},
+			"qa":  {Instance: "https://qa.service-now.com", Username: "b"},
+		},
+	})
+
+	r, err := Resolve("qa")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !r.Multi {
+		t.Fatal("Multi should be true with 2 profiles")
+	}
+
+	write(t, &File{
+		Profiles: map[string]Profile{
+			"only": {Instance: "https://only.service-now.com", Username: "a"},
+		},
+	})
+	r, err = Resolve("")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.Multi {
+		t.Fatal("Multi should be false with 1 profile")
 	}
 }
