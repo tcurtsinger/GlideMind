@@ -168,6 +168,32 @@ func TestWriteAuditOptOut(t *testing.T) {
 	}
 }
 
+// TestPreserveWritable pins the update semantics of `profile add`: a new
+// profile takes the flag; an update (password rotation, username change)
+// keeps the stored value unless --writable was explicitly passed — a
+// deliberately write-enabled profile must not silently lose its gate.
+func TestPreserveWritable(t *testing.T) {
+	cases := []struct {
+		name                          string
+		oldWritable                   bool
+		existed, flagChanged, flagVal bool
+		want                          bool
+	}{
+		{"new profile default ro", false, false, false, false, false},
+		{"new profile --writable", false, false, true, true, true},
+		{"update keeps rw", true, true, false, false, true},
+		{"update keeps ro", false, true, false, false, false},
+		{"update explicit --writable", false, true, true, true, true},
+		{"update explicit --writable=false", true, true, true, false, false},
+	}
+	for _, c := range cases {
+		got := preserveWritable(config.Profile{Writable: c.oldWritable}, c.existed, c.flagChanged, c.flagVal)
+		if got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 // TestProfileWritableLifecycle: the write-enable/write-disable commands flip
 // the stored flag, and profile list surfaces it as rw/ro.
 func TestProfileWritableLifecycle(t *testing.T) {

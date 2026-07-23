@@ -97,12 +97,13 @@ func newProfileAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, existed := f.Profiles[name]
+			old, existed := f.Profiles[name]
+			keepWritable := preserveWritable(old, existed, cmd.Flags().Changed("writable"), writable)
 			f.Profiles[name] = config.Profile{
 				Instance: base.String(),
 				Auth:     "basic",
 				Username: username,
-				Writable: writable,
+				Writable: keepWritable,
 			}
 			// Deliberately no auto-default: with one profile it is implicit
 			// anyway, and a sticky default armed here would silently route
@@ -132,7 +133,13 @@ func newProfileAddCmd() *cobra.Command {
 			if existed {
 				verb = "updated"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "profile %q %s (%s as %s)\n", name, verb, base.String(), username)
+			access := ""
+			if keepWritable {
+				// Surface preserved writability so a credential rotation
+				// shows the write gate is (still) open.
+				access = ", rw"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "profile %q %s (%s as %s%s)\n", name, verb, base.String(), username, access)
 			switch {
 			case clearedDefault != "":
 				fmt.Fprintf(cmd.ErrOrStderr(), "cleared implicit default %q — commands now require -p <name> (restore: glm profile use %s)\n", clearedDefault, clearedDefault)
@@ -150,6 +157,19 @@ func newProfileAddCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("instance")
 	_ = cmd.MarkFlagRequired("username")
 	return cmd
+}
+
+// preserveWritable decides the stored Writable when `profile add` runs: a
+// new profile takes the flag (default read-only), but an UPDATE — rotating a
+// password, changing the username — keeps the existing value unless
+// --writable was explicitly passed. A deliberately write-enabled profile
+// must not silently lose its gate to a credential rotation; write-disable
+// is the dedicated way to revoke.
+func preserveWritable(old config.Profile, existed, flagChanged, flagVal bool) bool {
+	if !existed || flagChanged {
+		return flagVal
+	}
+	return old.Writable
 }
 
 // clearLegacyDefault migrates configs written when `profile add` still
