@@ -121,10 +121,19 @@ func newUpdateCmd() *cobra.Command {
 			for _, name := range names {
 				line := fmt.Sprintf("  %s = %s", name, changes[name])
 				if current != nil && showDiff {
-					old := output.TruncateField(output.Value(current, name), false)
-					line = fmt.Sprintf("  %s: %s → %s", name, old, changes[name])
-					if old == changes[name] {
-						line += " (unchanged)"
+					if _, ok := current[name]; !ok {
+						// The read did not return this field — a read ACL can
+						// hide a field the caller may still write. Rendering ""
+						// as the old value would fabricate record state (and
+						// could mislabel a clear as "unchanged"), so mark it
+						// unreadable and never claim it is unchanged.
+						line = fmt.Sprintf("  %s: (unreadable) → %s", name, changes[name])
+					} else {
+						old := output.TruncateField(output.Value(current, name), false)
+						line = fmt.Sprintf("  %s: %s → %s", name, old, changes[name])
+						if old == changes[name] {
+							line += " (unchanged)"
+						}
 					}
 				}
 				fmt.Fprintln(errOut, output.SanitizeLine(line))

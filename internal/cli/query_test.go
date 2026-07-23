@@ -98,6 +98,10 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 			{"name": "incident", "element": "state", "internal_type": "integer", "display": "false", "reference.name": ""},
 			{"name": "incident", "element": "priority", "internal_type": "integer", "display": "false", "reference.name": ""},
 			{"name": "incident", "element": "description", "internal_type": "string", "display": "false", "reference.name": ""},
+			// In the dictionary (so a write validates) but deliberately never
+			// returned by incidentRow — models a field a caller may write yet
+			// cannot read (read ACL), the unreadable-diff case.
+			{"name": "incident", "element": "secret_field", "internal_type": "string", "display": "false", "reference.name": ""},
 		})
 	})
 	mux.HandleFunc("/api/now/stats/incident", func(w http.ResponseWriter, r *http.Request) {

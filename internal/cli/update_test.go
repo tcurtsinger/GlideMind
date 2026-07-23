@@ -197,6 +197,33 @@ func TestUpdateDiffPreviewAndSend(t *testing.T) {
 	}
 }
 
+// TestUpdateDiffMarksUnreadableField pins that the diff never fabricates an
+// old value (Codex review, W4): when the pre-write read does not return a
+// requested field — a read ACL can hide a field the caller may still write —
+// the preview marks it "(unreadable)" instead of rendering "" as the old
+// value, which would fabricate record state and could mislabel a clear as
+// unchanged. "secret_field" is in the dictionary (so it validates) but the
+// incident record fixture never returns it.
+func TestUpdateDiffMarksUnreadableField(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+	writableProfile(t, srv, "w")
+
+	_, stderr := runGlm(t, srv, "", "update", "incident", sysIDa, "-f", "secret_field=classified", "-p", "w", "--diff", "--dry-run")
+	if !strings.Contains(stderr, "secret_field: (unreadable) → classified") {
+		t.Errorf("an absent read field must render as unreadable, not a fabricated empty old value: %q", stderr)
+	}
+	if strings.Contains(stderr, "(unchanged)") {
+		t.Errorf("an unreadable field must never be labelled unchanged: %q", stderr)
+	}
+	// A clear (empty new value) of an unreadable field must also not claim
+	// "unchanged" — the whole bug is that a fabricated empty old == empty new.
+	_, stderr = runGlm(t, srv, "", "update", "incident", sysIDa, "-f", "secret_field=", "-p", "w", "--diff", "--dry-run")
+	if !strings.Contains(stderr, "secret_field: (unreadable) → ") || strings.Contains(stderr, "(unchanged)") {
+		t.Errorf("clearing an unreadable field must not be mislabelled unchanged: %q", stderr)
+	}
+}
+
 // TestUpdateYesSkipsDiffGet pins the W4 economy rule: --yes on a sys_id key
 // sends exactly one request — the PATCH — with no read-before-write.
 func TestUpdateYesSkipsDiffGet(t *testing.T) {
