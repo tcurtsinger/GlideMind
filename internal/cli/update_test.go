@@ -93,6 +93,29 @@ func TestUpdateStrictFieldValidation(t *testing.T) {
 	}
 }
 
+// TestUpdateStrictSysFieldTypo pins the write path's strictness on sys_*
+// names (DESIGN-WRITES.md W3): the read-path bypass that blanket-accepts any
+// sys_-prefixed name would let a typo like "sys_update_on" (for
+// "sys_updated_on") through, and ServiceNow silently drops it on the PATCH —
+// silent data loss. The write validator must catch it, suggesting the real
+// field, before the record endpoint is touched.
+func TestUpdateStrictSysFieldTypo(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+	writableProfile(t, srv, "w")
+
+	_, _, err := runGlmErr(t, srv, "", "update", "incident", sysIDa, "-f", "sys_update_on=x", "-p", "w", "--yes")
+	if err == nil || !strings.Contains(err.Error(), `"sys_updated_on"`) {
+		t.Fatalf("a sys_ typo must be caught with a suggestion, got: %v", err)
+	}
+	if hits["schema"] == 0 {
+		t.Error("write validation must fetch the schema to check the sys_ name")
+	}
+	if hits["patch"] != 0 || hits["get"] != 0 {
+		t.Errorf("a typo'd sys_ field must never reach the record endpoint: %v", hits)
+	}
+}
+
 // TestUpdateValidationSelfHeals: a field newer than the cached schema
 // triggers one refetch instead of a false hard error (W3 keeps read
 // validation's self-heal).

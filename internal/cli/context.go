@@ -130,11 +130,13 @@ func validateFields(ctx context.Context, store *schema.Store, table string, cach
 
 // validateWriteFields is the write-path variant (DESIGN-WRITES.md W3): the
 // schema is FETCHED when the cache is cold (reads never pay that cost, but a
-// write must be checked) and an unknown field is a hard error. ServiceNow
-// silently ignores unknown fields on a write, so a typo'd field name is
-// silent data loss — the single worst write footgun. The one leniency kept
-// from reads lives inside Validate itself: an ACL-filtered dictionary cannot
-// prove a field wrong, so incomplete metadata still passes.
+// write must be checked), an unknown field is a hard error, and sys_* names
+// are validated too (via ValidateStrict) rather than blanket-accepted as on
+// reads. ServiceNow silently ignores unknown fields on a write, so a typo'd
+// field name — including a sys_ typo like "sys_update_on" — is silent data
+// loss, the single worst write footgun. The one leniency kept from reads is
+// the ACL-filtered guard inside validate: an incomplete dictionary cannot
+// prove a field wrong, so partial metadata still passes.
 func validateWriteFields(ctx context.Context, store *schema.Store, table string, names []string) error {
 	return validateFieldsWith(ctx, store, table, nil, names, true)
 }
@@ -155,7 +157,15 @@ func validateFieldsWith(ctx context.Context, store *schema.Store, table string, 
 		}
 		meta, fetchedFresh = m, true
 	}
-	verr := meta.Validate(names)
+	validate := func(m *schema.TableMeta) error {
+		// Writes use the strict check (no sys_* bypass): on a write a typo is
+		// silent data loss, so sys_-prefixed names are validated too.
+		if write {
+			return m.ValidateStrict(names)
+		}
+		return m.Validate(names)
+	}
+	verr := validate(meta)
 	if verr == nil || fetchedFresh {
 		return verr
 	}
@@ -169,5 +179,5 @@ func validateFieldsWith(ctx context.Context, store *schema.Store, table string, 
 		}
 		return nil
 	}
-	return fresh.Validate(names)
+	return validate(fresh)
 }
