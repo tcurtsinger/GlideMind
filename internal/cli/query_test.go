@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/tcurtsinger/GlideMind/internal/audit"
 	"github.com/tcurtsinger/GlideMind/internal/config"
 	"github.com/tcurtsinger/GlideMind/internal/schema"
 	"github.com/tcurtsinger/GlideMind/internal/secret"
@@ -259,6 +261,20 @@ func isolateCache(t *testing.T) {
 	t.Setenv("GLM_TEST_CACHE_OWNER", t.Name())
 }
 
+// isolateConfig points the config dir at a per-test temp dir, stable across
+// runGlm calls within one test so a test can write a config file first (e.g.
+// a writable profile) and still see it inside runGlm.
+func isolateConfig(t *testing.T) {
+	t.Helper()
+	if os.Getenv("GLM_TEST_CONF_OWNER") == t.Name() {
+		return
+	}
+	dir := t.TempDir()
+	t.Setenv("APPDATA", dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("GLM_TEST_CONF_OWNER", t.Name())
+}
+
 // runGlm executes the real command tree against the fake instance using pure
 // env config, returning stdout and stderr; failures are fatal.
 func runGlm(t *testing.T, srv *httptest.Server, stdin string, args ...string) (string, string) {
@@ -275,10 +291,16 @@ func runGlmErr(t *testing.T, srv *httptest.Server, stdin string, args ...string)
 	t.Helper()
 	isolateCache(t)
 	// Isolate the config file too: commands that read it (prime's profile
-	// line) must see the test's world, not the developer's real profiles.
-	confDir := t.TempDir()
-	t.Setenv("APPDATA", confDir)
-	t.Setenv("XDG_CONFIG_HOME", confDir)
+	// line, the write gate) must see the test's world, not the developer's
+	// real profiles.
+	isolateConfig(t)
+	// And the write audit log — a test write must never append to the
+	// developer's real audit trail. Tests asserting audit content set
+	// audit.EnvLogPath themselves after this.
+	if os.Getenv("GLM_TEST_AUDIT_OWNER") != t.Name() {
+		t.Setenv(audit.EnvLogPath, filepath.Join(t.TempDir(), "audit.jsonl"))
+		t.Setenv("GLM_TEST_AUDIT_OWNER", t.Name())
+	}
 	t.Setenv(config.EnvProfile, "")
 	t.Setenv(config.EnvInstance, srv.URL)
 	t.Setenv(config.EnvUsername, "svc.glm")

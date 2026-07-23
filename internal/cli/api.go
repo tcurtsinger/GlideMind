@@ -10,9 +10,12 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/tcurtsinger/GlideMind/internal/audit"
+	"github.com/tcurtsinger/GlideMind/internal/config"
 	"github.com/tcurtsinger/GlideMind/internal/output"
 )
 
@@ -24,15 +27,17 @@ var apiMethods = map[string]bool{
 func newAPICmd() *cobra.Command {
 	var params []string
 	var body string
-	var yes, full bool
+	var yes, full, noAudit bool
 
 	cmd := &cobra.Command{
 		Use:   "api <METHOD> <path>",
 		Short: "Raw REST passthrough (gh api style)",
 		Long: "Calls any instance REST endpoint with profile auth and glm's usual\n" +
-			"output formatting. Query parameters via -f k=v (repeatable). glm is\n" +
-			"otherwise read-only, so non-GET methods print the request and refuse\n" +
-			"to run without --yes.",
+			"output formatting. Query parameters via -f k=v (repeatable). Writes\n" +
+			"pass two gates: the profile must be write-enabled (glm profile\n" +
+			"write-enable <name>), and each non-GET call prints the request plus\n" +
+			"the acting identity and refuses to run without --yes. Writes are\n" +
+			"recorded (field names only) in a local audit log.",
 		Example: "  glm api GET /api/now/table/incident -f sysparm_limit=1\n" +
 			"  glm api GET /api/sn_sc/servicecatalog/items -f sysparm_text=laptop\n" +
 			"  glm api POST /api/x_acme_app/scaffold --body '{\"name\":\"demo\"}' --yes",
@@ -56,6 +61,26 @@ func newAPICmd() *cobra.Command {
 				q.Add(k, v)
 			}
 
+			res, err := resolveProfile(cmd, "")
+			if err != nil {
+				return err
+			}
+			// Gate 1 (DESIGN-WRITES.md W1): the profile itself must be
+			// write-enabled — a stored, deliberate property. This fires
+			// before ANYTHING with side effects or blocking potential: a
+			// profile that could never write must get the one-line refusal
+			// naming the fix, not a credential-lookup error from a keyring
+			// it has no entry in, and not a hang consuming a --body @- stdin
+			// it would never send.
+			if method != http.MethodGet && !res.Profile.Writable {
+				if res.Name == config.EnvProfileName {
+					// The env profile is not stored, so write-enable can
+					// never apply to it — point at the real remedy.
+					return fmt.Errorf("the %s env profile is always read-only — writes need a named, write-enabled profile: `glm profile add <name> --instance <url> --username <user> --writable`", config.EnvInstance)
+				}
+				return fmt.Errorf("profile %q is read-only — enable writes with `glm profile write-enable %s` (each write still needs --yes)", res.Name, res.Name)
+			}
+
 			payload, err := readBodyArg(cmd, body)
 			if err != nil {
 				return err
@@ -64,21 +89,24 @@ func newAPICmd() *cobra.Command {
 				return fmt.Errorf("--body is not valid JSON")
 			}
 
-			client, _, err := clientFor(cmd, "")
+			client, err := clientForResolved(cmd, res)
 			if err != nil {
 				return err
 			}
 
 			if method != http.MethodGet {
-				// Show exactly what will go on the wire — the same URL Raw
-				// builds, so an approved --yes write matches the preview even
-				// when the path carries its own query string.
+				// Gate 2: per-command confirmation. Show exactly what will go
+				// on the wire — the same URL Raw builds, so an approved --yes
+				// write matches the preview even when the path carries its
+				// own query string — and who it runs as (W7): a write must
+				// never land under an unexpected identity or instance.
 				errOut := cmd.ErrOrStderr()
 				target, err := client.PreviewURL(path, q)
 				if err != nil {
 					return err
 				}
 				fmt.Fprintf(errOut, "%s %s\n", method, target)
+				fmt.Fprintln(errOut, output.SanitizeLine(fmt.Sprintf("as %s @ %s (profile %s)", res.Profile.Username, strings.TrimPrefix(res.Profile.Instance, "https://"), res.Name)))
 				if len(payload) > 0 {
 					fmt.Fprintf(errOut, "%s\n", payload)
 				}
@@ -88,6 +116,30 @@ func newAPICmd() *cobra.Command {
 			}
 
 			data, err := client.Raw(cmd.Context(), method, path, q, payload)
+			if method != http.MethodGet && !noAudit {
+				// W6: best-effort local trail of what glm wrote — field
+				// names, identity, outcome; never values. An audit failure
+				// warns but must not fail the write it records.
+				result := "ok"
+				if err != nil {
+					result = "error"
+				}
+				target, params := scrubTarget(path, q)
+				if aerr := audit.Append(audit.Entry{
+					Time:     time.Now().UTC(),
+					Instance: res.Profile.Instance,
+					Profile:  res.Name,
+					User:     res.Profile.Username,
+					Command:  "api",
+					Method:   method,
+					Target:   target,
+					Params:   params,
+					Fields:   audit.BodyFieldNames(payload),
+					Result:   result,
+				}); aerr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: audit log not written: %v\n", aerr)
+				}
+			}
 			if err != nil {
 				return err
 			}
@@ -98,7 +150,32 @@ func newAPICmd() *cobra.Command {
 	cmd.Flags().StringVar(&body, "body", "", "JSON request body (@file reads a file, @- reads stdin)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm executing a non-GET request")
 	cmd.Flags().BoolVar(&full, "full", false, "no truncation of long values")
+	cmd.Flags().BoolVar(&noAudit, "no-audit", false, "skip the local write audit log for this call")
 	return cmd
+}
+
+// scrubTarget prepares an audit-safe target: the path with any query string
+// removed, plus the sorted NAMES of query parameters from both the embedded
+// path query and -f. Query values (encoded queries, scripted REST params)
+// can carry record data or secrets, and the audit contract is names-only at
+// rest (DESIGN-WRITES.md W6).
+func scrubTarget(path string, q url.Values) (string, []string) {
+	target, rawQuery, _ := strings.Cut(path, "?")
+	names := map[string]bool{}
+	if vals, err := url.ParseQuery(rawQuery); err == nil {
+		for k := range vals {
+			names[k] = true
+		}
+	}
+	for k := range q {
+		names[k] = true
+	}
+	params := make([]string, 0, len(names))
+	for k := range names {
+		params = append(params, k)
+	}
+	sort.Strings(params)
+	return target, params
 }
 
 // maxAPIBody caps a request body read from @- or @file so unbounded stdin or

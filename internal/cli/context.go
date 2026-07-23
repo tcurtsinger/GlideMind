@@ -14,17 +14,19 @@ import (
 	"github.com/tcurtsinger/GlideMind/internal/snow"
 )
 
-// clientFor resolves the active profile (flagName overrides the --profile
-// flag when non-empty, e.g. `glm profile test <name>`) and builds an
-// authenticated client from it.
-func clientFor(cmd *cobra.Command, flagName string) (*snow.Client, *config.Resolved, error) {
+// resolveProfile picks the active profile (flagName overrides the --profile
+// flag when non-empty), stamps the instance, and validates the auth method —
+// everything that can be decided WITHOUT credentials. Policy checks that must
+// fire even when no credential exists (the W1 write gate) run between this
+// and clientForResolved.
+func resolveProfile(cmd *cobra.Command, flagName string) (*config.Resolved, error) {
 	name := flagName
 	if name == "" {
 		name, _ = cmd.Flags().GetString("profile")
 	}
 	res, err := config.Resolve(name)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// With several profiles configured, stamp which instance this command
 	// runs against (DESIGN-INSTANCES.md I3): stderr keeps pipes clean, and
@@ -38,18 +40,23 @@ func clientFor(cmd *cobra.Command, flagName string) (*snow.Client, *config.Resol
 		fmt.Fprintln(cmd.ErrOrStderr(), output.SanitizeLine(stamp))
 	}
 	if res.Profile.Auth != "" && res.Profile.Auth != "basic" {
-		return nil, nil, fmt.Errorf("profile %q: auth method %q is not supported yet (v1 supports: basic)", res.Name, res.Profile.Auth)
+		return nil, fmt.Errorf("profile %q: auth method %q is not supported yet (v1 supports: basic)", res.Name, res.Profile.Auth)
 	}
+	return res, nil
+}
 
+// clientForResolved builds an authenticated client for an already-resolved
+// profile (credential lookup happens here).
+func clientForResolved(cmd *cobra.Command, res *config.Resolved) (*snow.Client, error) {
 	password, err := secret.Get(res.Name)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	client, err := snow.NewBasic(res.Profile.Instance, res.Profile.Username, password, timeout)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
@@ -57,6 +64,19 @@ func clientFor(cmd *cobra.Command, flagName string) (*snow.Client, *config.Resol
 		client.SetLogf(func(format string, args ...any) {
 			fmt.Fprintf(errOut, "glm: "+format+"\n", args...)
 		})
+	}
+	return client, nil
+}
+
+// clientFor is resolveProfile + clientForResolved for the common case.
+func clientFor(cmd *cobra.Command, flagName string) (*snow.Client, *config.Resolved, error) {
+	res, err := resolveProfile(cmd, flagName)
+	if err != nil {
+		return nil, nil, err
+	}
+	client, err := clientForResolved(cmd, res)
+	if err != nil {
+		return nil, nil, err
 	}
 	return client, res, nil
 }

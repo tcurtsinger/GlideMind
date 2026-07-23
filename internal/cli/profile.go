@@ -27,13 +27,51 @@ func newProfileCmd() *cobra.Command {
 		newProfileUseCmd(),
 		newProfileTestCmd(),
 		newProfileRemoveCmd(),
+		newProfileWritableCmd("write-enable", true),
+		newProfileWritableCmd("write-disable", false),
 	)
 	return cmd
 }
 
+// newProfileWritableCmd flips the per-profile write gate (DESIGN-WRITES.md
+// W1). It is a stored, deliberate property — the first of the two gates
+// every write must pass (the second is per-command confirmation).
+func newProfileWritableCmd(name string, enable bool) *cobra.Command {
+	short := "Allow writes on a profile (each still needs --yes)"
+	if !enable {
+		short = "Make a profile read-only again (the default)"
+	}
+	return &cobra.Command{
+		Use:   name + " <name>",
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			f, err := config.Load()
+			if err != nil {
+				return err
+			}
+			p, ok := f.Profiles[args[0]]
+			if !ok {
+				return fmt.Errorf("profile %q not found (have: %v)", args[0], f.Names())
+			}
+			p.Writable = enable
+			f.Profiles[args[0]] = p
+			if err := f.Save(); err != nil {
+				return err
+			}
+			state := "writable — non-GET `glm api` calls run with --yes"
+			if !enable {
+				state = "read-only"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "profile %q is now %s\n", args[0], state)
+			return nil
+		},
+	}
+}
+
 func newProfileAddCmd() *cobra.Command {
 	var instance, username string
-	var passwordStdin bool
+	var passwordStdin, writable bool
 
 	cmd := &cobra.Command{
 		Use:   "add <name>",
@@ -59,11 +97,13 @@ func newProfileAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, existed := f.Profiles[name]
+			old, existed := f.Profiles[name]
+			keepWritable := preserveWritable(old, existed, cmd.Flags().Changed("writable"), writable)
 			f.Profiles[name] = config.Profile{
 				Instance: base.String(),
 				Auth:     "basic",
 				Username: username,
+				Writable: keepWritable,
 			}
 			// Deliberately no auto-default: with one profile it is implicit
 			// anyway, and a sticky default armed here would silently route
@@ -93,7 +133,13 @@ func newProfileAddCmd() *cobra.Command {
 			if existed {
 				verb = "updated"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "profile %q %s (%s as %s)\n", name, verb, base.String(), username)
+			access := ""
+			if keepWritable {
+				// Surface preserved writability so a credential rotation
+				// shows the write gate is (still) open.
+				access = ", rw"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "profile %q %s (%s as %s%s)\n", name, verb, base.String(), username, access)
 			switch {
 			case clearedDefault != "":
 				fmt.Fprintf(cmd.ErrOrStderr(), "cleared implicit default %q — commands now require -p <name> (restore: glm profile use %s)\n", clearedDefault, clearedDefault)
@@ -107,9 +153,23 @@ func newProfileAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&instance, "instance", "", "instance name or URL, e.g. acme or https://acme.service-now.com (required)")
 	cmd.Flags().StringVar(&username, "username", "", "instance username (required)")
 	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "read the password from stdin instead of prompting")
+	cmd.Flags().BoolVar(&writable, "writable", false, "allow writes on this profile (default read-only)")
 	_ = cmd.MarkFlagRequired("instance")
 	_ = cmd.MarkFlagRequired("username")
 	return cmd
+}
+
+// preserveWritable decides the stored Writable when `profile add` runs: a
+// new profile takes the flag (default read-only), but an UPDATE — rotating a
+// password, changing the username — keeps the existing value unless
+// --writable was explicitly passed. A deliberately write-enabled profile
+// must not silently lose its gate to a credential rotation; write-disable
+// is the dedicated way to revoke.
+func preserveWritable(old config.Profile, existed, flagChanged, flagVal bool) bool {
+	if !existed || flagChanged {
+		return flagVal
+	}
+	return old.Writable
 }
 
 // clearLegacyDefault migrates configs written when `profile add` still
@@ -182,7 +242,11 @@ func newProfileListCmd() *cobra.Command {
 				if name == f.Default {
 					marker = "*"
 				}
-				fmt.Fprintf(out, "%s %s\t%s\t%s\n", marker, name, p.Instance, p.Username)
+				access := "ro"
+				if p.Writable {
+					access = "rw"
+				}
+				fmt.Fprintf(out, "%s %s\t%s\t%s\t%s\n", marker, name, p.Instance, p.Username, access)
 			}
 			return nil
 		},

@@ -28,6 +28,13 @@ type Profile struct {
 	Instance string `toml:"instance"`
 	Auth     string `toml:"auth,omitempty"` // "basic" (default); more methods later
 	Username string `toml:"username,omitempty"`
+	// Writable gates writes (DESIGN-WRITES.md W1): a profile writes nothing
+	// until this is set — deliberately, via `glm profile write-enable` or
+	// `profile add --writable`. There is no env override: flipping write
+	// access by environment is too easy to do by accident in the wrong
+	// shell, so writability is a stored, per-profile property. The synthetic
+	// GLM_INSTANCE env profile is therefore always read-only.
+	Writable bool `toml:"writable,omitempty"`
 }
 
 // File is the on-disk config: %APPDATA%\glidemind\config.toml on Windows,

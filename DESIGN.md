@@ -234,7 +234,9 @@ The four workloads glm must serve, per actual usage:
 
 ## Deferred (explicitly not designed yet)
 
-- Write verbs + safety model (per-profile write enablement, `--dry-run`, confirmations, audit trail)
+- Write verbs `create`/`update`/`delete` — safety model designed and locked in
+  [DESIGN-WRITES.md](DESIGN-WRITES.md); the safety core (per-profile `writable` gate,
+  identity-in-preview, local audit log on `glm api`) landed 2026-07-23, verbs pending
 - Containerized deployment + MCP facade (trigger: Claude Desktop/web need)
 - Interactive OAuth (PKCE) · attachment upload · import sets · background scripts · update sets
 - Watch/streaming · cross-instance federated queries · distribution (scoop/brew/goreleaser) · OSS release
