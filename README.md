@@ -16,8 +16,8 @@ getting a correct answer:
 - Native ServiceNow encoded queries — no invented DSL.
 - Pre-flight field validation against a local schema cache: did-you-mean errors instead of the
   REST API's silent empty strings.
-- Bounded output with self-serve pagination hints; truncations always name the command that
-  fetches the rest.
+- Bounded output with self-serve pagination hints; truncated values carry a marker showing how
+  to lift the cap (`--full`), and `grep`'s remainder marker names the exact `glm get` to run.
 - `glm grep` — code search across script tables. `glm api` — authenticated raw REST passthrough.
 
 ## Principles

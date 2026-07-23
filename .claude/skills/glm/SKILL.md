@@ -12,6 +12,6 @@ Essentials:
 - Data arrives on stdout; summaries, pagination hints, and warnings on stderr.
 - Batch independent glm commands into one shell call; aggregate before enumerating; pipe
   `--format ids` into batch `get` so bulk data stays out of your context.
-- Truncated values end in a marker naming the exact follow-up command — never dead-end.
+- Truncated values end in a marker showing how to get the rest (`--full`); grep's remainder marker names the exact `glm get` to run.
 - `--profile <name>` selects the instance; `glm whoami` sanity-checks auth.
 - On PowerShell, quote the stdin body marker: `--body '@-'` (bare `@-` is a PS parse error).
