@@ -79,6 +79,12 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 			if hits["evolving-dict"] > 1 {
 				rows = append(rows, map[string]any{"name": "evolving", "element": "tier", "internal_type": "choice", "display": "false"})
 			}
+			// "legacy" exists ONLY on the first fetch — a field removed or
+			// renamed after the cache was written (the opposite staleness
+			// direction from "tier").
+			if hits["evolving-dict"] == 1 {
+				rows = append(rows, map[string]any{"name": "evolving", "element": "legacy", "internal_type": "string", "display": "false"})
+			}
 			writeResult(w, rows)
 			return
 		}

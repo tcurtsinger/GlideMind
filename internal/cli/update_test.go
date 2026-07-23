@@ -138,6 +138,33 @@ func TestUpdateValidationSelfHeals(t *testing.T) {
 	}
 }
 
+// TestUpdateStrictRefetchesStaleCache pins the other staleness direction
+// (DESIGN-WRITES.md W3): a warm cache can still list a field removed or
+// renamed on the instance since it was written. A write must NOT trust that
+// cached pass — it refetches and hard-fails, or ServiceNow would silently
+// ignore the now-unknown field and glm would report a false success.
+func TestUpdateStrictRefetchesStaleCache(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+	writableProfile(t, srv, "w")
+
+	runGlm(t, srv, "", "schema", "evolving") // warm: caches "legacy" as valid
+	if hits["evolving-dict"] != 1 {
+		t.Fatalf("expected 1 dictionary fetch after warming, got %v", hits)
+	}
+
+	_, _, err := runGlmErr(t, srv, "", "update", "evolving", sysIDa, "-f", "legacy=x", "-p", "w", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "unknown field") || !strings.Contains(err.Error(), "legacy") {
+		t.Fatalf("a field removed since the cache was written must be refused on write, got: %v", err)
+	}
+	if hits["evolving-dict"] != 2 {
+		t.Errorf("write must refetch to settle a cached pass, got %v", hits)
+	}
+	if hits["patch"] != 0 || hits["get"] != 0 {
+		t.Errorf("an unknown field must never reach the record endpoint: %v", hits)
+	}
+}
+
 // TestUpdateDiffPreviewAndSend: the flagship W4 flow — key resolution via
 // get's resolver, a field-level old → new diff, identity in the preview
 // (W7), then exactly one PATCH carrying exactly the requested change.

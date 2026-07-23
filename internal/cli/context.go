@@ -166,14 +166,28 @@ func validateFieldsWith(ctx context.Context, store *schema.Store, table string, 
 		return m.Validate(names)
 	}
 	verr := validate(meta)
-	if verr == nil || fetchedFresh {
+	if fetchedFresh {
 		return verr
+	}
+	// A cached PASS is trusted on reads but not on writes. A warm cache (up to
+	// the 7-day TTL) can be stale in either direction: the self-heal below
+	// already refetches on a MISS (a field created after the cache), but a
+	// field REMOVED or RENAMED since the cache was written still passes here,
+	// and trusting it would let a now-unknown field reach the PATCH — which
+	// ServiceNow silently ignores, reporting a false success and auditing a
+	// change that never happened. So a write always settles a cached verdict
+	// against fresh schema; a read refetches only on a miss (a false "unknown
+	// field" would block a valid query).
+	if verr == nil && !write {
+		return nil
 	}
 	fresh, err := store.Refetch(ctx, table)
 	if err != nil || fresh == nil {
-		// The refetch could not settle it: reads let the API judge (a false
-		// "unknown field" is worse than a missed typo), writes surface the
-		// cached verdict (a missed typo is silent data loss).
+		// The refetch could not settle it. Reads let the API judge (a false
+		// "unknown field" is worse than a missed typo). Writes fall back to
+		// the cached verdict — a cached miss still blocks (a typo is silent
+		// data loss), and a cached pass proceeds, no worse than trusting the
+		// warm cache as before.
 		if write {
 			return verr
 		}
