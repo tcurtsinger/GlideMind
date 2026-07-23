@@ -287,6 +287,18 @@ func TestAPIEmptyResultHonorsMachineFormats(t *testing.T) {
 	}
 }
 
+func TestAPIStdinBodyCapped(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	// An oversized piped body must be rejected before any request is sent.
+	big := strings.Repeat("x", (8<<20)+1)
+	_, _, err := runGlmErr(t, srv, big, "api", "POST", "/api/x", "--body", "@-", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("oversized stdin body should be rejected, got: %v", err)
+	}
+}
+
 func TestAPIRejectsBadInput(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)

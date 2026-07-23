@@ -2,6 +2,7 @@ package output
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -9,6 +10,75 @@ import (
 var recs = []map[string]any{
 	{"number": "INC0000001", "short_description": "Printer on fire", "sys_id": "abc123"},
 	{"number": "INC0000002", "short_description": map[string]any{"display_value": "Café down", "link": "x"}, "sys_id": "def456"},
+}
+
+func TestHumanFormatsSanitizeTerminalControls(t *testing.T) {
+	// A value carrying an ESC/OSC sequence must not reach the terminal
+	// verbatim in any human format.
+	evil := []map[string]any{{"number": "INC1", "short_description": "safe\x1b]0;pwned\x07evil\x1b[2J", "sys_id": "s1"}}
+	for _, format := range []string{"table", "tsv", "csv"} {
+		out := render(t, format, []string{"number", "short_description"}, evil, false)
+		if strings.ContainsRune(out, 0x1b) || strings.ContainsRune(out, 0x07) {
+			t.Errorf("%s: control characters survived into output: %q", format, out)
+		}
+		if !strings.Contains(out, "safe") || !strings.Contains(out, "evil") {
+			t.Errorf("%s: legitimate text was lost: %q", format, out)
+		}
+	}
+}
+
+func TestSanitizeLineFlattensAndStrips(t *testing.T) {
+	// Single-line status fields (grep names/lines, attachment summaries) must
+	// neutralize newlines and CR too, not just other control chars — an
+	// embedded \n injects a line, \r returns to column 0.
+	got := SanitizeLine("name\r\nFAKE: injected\x1b[2Kline")
+	if strings.ContainsAny(got, "\r\n\t") {
+		t.Errorf("newline/CR/tab must be folded to spaces: %q", got)
+	}
+	if strings.ContainsRune(got, 0x1b) {
+		t.Errorf("control chars must be stripped: %q", got)
+	}
+	if !strings.Contains(got, "name") || !strings.Contains(got, "injected") {
+		t.Errorf("legitimate text must survive: %q", got)
+	}
+}
+
+func TestHumanFormatSanitizesFieldNames(t *testing.T) {
+	// glm api derives column names from untrusted response keys; a hostile
+	// key must not emit terminal controls as a header or detail label.
+	evilKey := "col\x1b]0;pwned\x07"
+	rec := []map[string]any{{evilKey: "v", "sys_id": "s"}}
+	for _, format := range []string{"table", "tsv", "csv"} {
+		out := render(t, format, []string{evilKey}, rec, false)
+		if strings.ContainsRune(out, 0x1b) || strings.ContainsRune(out, 0x07) {
+			t.Errorf("%s: control chars in field name reached output: %q", format, out)
+		}
+	}
+	var buf bytes.Buffer
+	if err := RecordDetail(&buf, map[string]any{evilKey: "v"}, []string{evilKey}, Options{Format: "table"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsRune(buf.String(), 0x1b) {
+		t.Errorf("detail label must be sanitized: %q", buf.String())
+	}
+}
+
+func TestMachineFormatsStayLossless(t *testing.T) {
+	// json/jsonl must not sanitize: control bytes are encoded (not replaced
+	// with U+FFFD), so they round-trip byte-for-byte.
+	raw := "tab\tand\x1bescape"
+	evil := []map[string]any{{"number": "INC1", "note": raw, "sys_id": "s1"}}
+	out := render(t, "jsonl", []string{"number", "note"}, evil, true)
+	var got map[string]string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &got); err != nil {
+		t.Fatalf("jsonl not valid JSON: %v (%q)", err, out)
+	}
+	if got["note"] != raw {
+		t.Errorf("control byte did not round-trip through jsonl: %q", got["note"])
+	}
+	if strings.ContainsRune(out, '�') {
+		t.Errorf("machine format must not sanitize (no U+FFFD): %q", out)
+	}
 }
 
 func render(t *testing.T, format string, fields []string, in []map[string]any, full bool) string {

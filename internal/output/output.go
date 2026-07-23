@@ -68,18 +68,62 @@ func truncateCell(s string, full bool) string {
 	return string(runes[:CellMax-1]) + "…"
 }
 
-// oneLine keeps tabular cells on a single row.
+// oneLine keeps tabular cells on a single row and strips control characters
+// so server-supplied content cannot hijack the terminal.
 func oneLine(s string) string {
-	if !strings.ContainsAny(s, "\r\n\t") {
-		return s
-	}
-	s = strings.ReplaceAll(s, "\r\n", " ")
 	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
 			return ' '
+		case isUnsafeControl(r):
+			return '�'
 		}
 		return r
 	}, s)
+}
+
+// sanitizeFields returns a display-safe copy of column names for human
+// output — glm api derives headers/labels from untrusted response keys.
+// Callers keep the original names for value lookup.
+func sanitizeFields(fields []string) []string {
+	out := make([]string, len(fields))
+	for i, f := range fields {
+		out[i] = oneLine(f)
+	}
+	return out
+}
+
+// SanitizeLine makes server-controlled text safe for a single-line status
+// context (grep match lines, attachment summaries): it strips control
+// characters AND folds tab/newline/CR to spaces, so an embedded newline or
+// carriage return cannot inject extra lines or return to column 0.
+func SanitizeLine(s string) string { return oneLine(s) }
+
+// sanitizeControls replaces terminal control characters — which server data
+// carries (ticket text, scripts, attachment names) — with the Unicode
+// replacement char, so rendering to a terminal cannot be hijacked. Tab,
+// newline, and carriage return are preserved for multi-line human output.
+// Machine formats (json/jsonl) never call this and stay byte-for-byte lossless.
+func sanitizeControls(s string) string {
+	if !strings.ContainsFunc(s, isUnsafeControl) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if isUnsafeControl(r) {
+			return '�'
+		}
+		return r
+	}, s)
+}
+
+// isUnsafeControl reports whether r is a control character that could alter
+// terminal state — every C0 control except the whitespace glm handles, plus
+// DEL and the C1 range (ESC-less CSI/OSC introducers on some terminals).
+func isUnsafeControl(r rune) bool {
+	if r == '\t' || r == '\n' || r == '\r' {
+		return false
+	}
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
 }
 
 // Records renders a list result set to w.
@@ -102,13 +146,13 @@ func Records(w io.Writer, fields []string, recs []map[string]any, opts Options) 
 
 	case "csv":
 		cw := csv.NewWriter(w)
-		if err := cw.Write(fields); err != nil {
+		if err := cw.Write(sanitizeFields(fields)); err != nil {
 			return err
 		}
 		for _, r := range recs {
 			row := make([]string, len(fields))
 			for i, f := range fields {
-				row[i] = truncateCell(Value(r, f), opts.Full)
+				row[i] = sanitizeControls(truncateCell(Value(r, f), opts.Full))
 			}
 			if err := cw.Write(row); err != nil {
 				return err
@@ -152,7 +196,10 @@ func Records(w io.Writer, fields []string, recs []map[string]any, opts Options) 
 
 func tabularRows(fields []string, recs []map[string]any, opts Options) [][]string {
 	rows := make([][]string, 0, len(recs)+1)
-	rows = append(rows, fields)
+	// Header names are display strings too — glm api derives them from
+	// untrusted response keys, so sanitize the shown copy (the original
+	// field name is still used below to look up values).
+	rows = append(rows, sanitizeFields(fields))
 	for _, r := range recs {
 		row := make([]string, len(fields))
 		for i, f := range fields {
@@ -237,7 +284,7 @@ func RecordDetail(w io.Writer, rec map[string]any, fields []string, opts Options
 		}
 	}
 	for _, k := range fields {
-		fmt.Fprintf(w, "%-*s  %s\n", width, k, TruncateField(Value(rec, k), opts.Full))
+		fmt.Fprintf(w, "%-*s  %s\n", width, SanitizeLine(k), sanitizeControls(TruncateField(Value(rec, k), opts.Full)))
 	}
 	return nil
 }
