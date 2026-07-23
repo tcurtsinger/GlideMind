@@ -238,8 +238,9 @@ The four workloads glm must serve, per actual usage:
   [DESIGN-WRITES.md](DESIGN-WRITES.md); the safety core (per-profile `writable` gate,
   identity-in-preview, local audit log on `glm api`) plus `update` (strict field validation +
   read-before-write diff), `create`, and `delete` (typed-confirm on a destructive write) all
-  landed 2026-07-23. `glm diff` (DESIGN-INSTANCES.md I5) is the next verb; bulk/import,
-  attachment upload, and choice-label resolution remain deferred (W10)
+  landed 2026-07-23. `glm diff` (cross-instance record + schema diff, DESIGN-INSTANCES.md I5)
+  landed 2026-07-23, completing the designed verb surface. Bulk/import, attachment upload,
+  choice-label resolution, and record sync remain deferred (W10)
 - Containerized deployment + MCP facade (trigger: Claude Desktop/web need)
 - Interactive OAuth (PKCE) · attachment upload · import sets · background scripts · update sets
 - Watch/streaming · cross-instance federated queries · distribution (scoop/brew/goreleaser) · OSS release
