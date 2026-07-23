@@ -10,9 +10,27 @@ import (
 // a did-you-mean error on the first unknown — the ServiceNow API silently
 // returns empty strings for nonexistent fields, so typos must die before the
 // request. Dot-walks are checked on their first segment only (later hops
-// live on other tables); sys_* names are always accepted (base bookkeeping
-// fields exist everywhere and dictionaries are sometimes ACL-filtered).
+// live on other tables); sys_* names are always accepted on this read path
+// (base bookkeeping fields exist everywhere and a false "unknown field" would
+// block a valid query).
 func (m *TableMeta) Validate(names []string) error {
+	return m.validate(names, false)
+}
+
+// ValidateStrict is the write-path check (DESIGN-WRITES.md W3): identical to
+// Validate but WITHOUT the sys_* bypass. On a write a typo is silent data
+// loss (ServiceNow drops the unknown field on the PATCH), so the leniency
+// that only risks a missed typo on reads is not worth its cost here. A
+// complete dictionary — the sys_id sentinel below — carries the real system
+// fields (sys_updated_on, sys_mod_count, ...), so a sys_-prefixed typo like
+// "sys_update_on" is a genuine unknown and must die before the request. The
+// ACL-filtered guard is still shared: incomplete metadata cannot prove a
+// field wrong either way.
+func (m *TableMeta) ValidateStrict(names []string) error {
+	return m.validate(names, true)
+}
+
+func (m *TableMeta) validate(names []string, strict bool) error {
 	// An ACL-filtered dictionary (empty or partial) must not produce false
 	// unknown-field errors. A complete ServiceNow dictionary always carries
 	// the sys_id row; when it is missing, this metadata cannot be trusted
@@ -22,7 +40,10 @@ func (m *TableMeta) Validate(names []string) error {
 	}
 	for _, name := range names {
 		first, _, _ := strings.Cut(name, ".")
-		if first == "" || strings.HasPrefix(first, "sys_") {
+		if first == "" {
+			continue
+		}
+		if !strict && strings.HasPrefix(first, "sys_") {
 			continue
 		}
 		if _, ok := m.Fields[first]; ok {

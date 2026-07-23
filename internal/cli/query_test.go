@@ -79,6 +79,12 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 			if hits["evolving-dict"] > 1 {
 				rows = append(rows, map[string]any{"name": "evolving", "element": "tier", "internal_type": "choice", "display": "false"})
 			}
+			// "legacy" exists ONLY on the first fetch — a field removed or
+			// renamed after the cache was written (the opposite staleness
+			// direction from "tier").
+			if hits["evolving-dict"] == 1 {
+				rows = append(rows, map[string]any{"name": "evolving", "element": "legacy", "internal_type": "string", "display": "false"})
+			}
 			writeResult(w, rows)
 			return
 		}
@@ -92,6 +98,10 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 			{"name": "incident", "element": "state", "internal_type": "integer", "display": "false", "reference.name": ""},
 			{"name": "incident", "element": "priority", "internal_type": "integer", "display": "false", "reference.name": ""},
 			{"name": "incident", "element": "description", "internal_type": "string", "display": "false", "reference.name": ""},
+			// In the dictionary (so a write validates) but deliberately never
+			// returned by incidentRow — models a field a caller may write yet
+			// cannot read (read ACL), the unreadable-diff case.
+			{"name": "incident", "element": "secret_field", "internal_type": "string", "display": "false", "reference.name": ""},
 		})
 	})
 	mux.HandleFunc("/api/now/stats/incident", func(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +220,16 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 		})
 	})
 	mux.HandleFunc("/api/now/table/incident/", func(w http.ResponseWriter, r *http.Request) {
-		bump("get")
+		bump("get") // every record-endpoint hit, any method (historic key)
+		if r.Method != http.MethodGet {
+			bump(strings.ToLower(r.Method))
+			var body map[string]string
+			if json.NewDecoder(r.Body).Decode(&body) == nil {
+				for k, v := range body {
+					bump("set-" + k + "=" + v)
+				}
+			}
+		}
 		id := strings.TrimPrefix(r.URL.Path, "/api/now/table/incident/")
 		writeResult(w, incidentRow(id, "INC0000001", "Printer on fire"))
 	})
@@ -236,6 +255,12 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 		}
 		if strings.Contains(q, "number=INC0000001") {
 			writeResult(w, []map[string]any{incidentRow(sysIDa, "INC0000001", "Printer on fire")})
+			return
+		}
+		// Any other number lookup misses — the not-found path for key
+		// resolution (get, update).
+		if strings.HasPrefix(q, "number=") {
+			writeResult(w, []map[string]any{})
 			return
 		}
 		w.Header().Set("X-Total-Count", "47")

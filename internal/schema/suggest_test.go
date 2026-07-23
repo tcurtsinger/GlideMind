@@ -50,6 +50,43 @@ func TestValidateDidYouMean(t *testing.T) {
 	}
 }
 
+func TestValidateStrictChecksSysFields(t *testing.T) {
+	// On the write path (DESIGN-WRITES.md W3) a sys_-prefixed typo is a
+	// genuine unknown field, not a free pass: the lenient read bypass would
+	// let it through and ServiceNow would silently drop it on the PATCH.
+	m := &TableMeta{
+		Name: "task",
+		Fields: map[string]Field{
+			"state":          {},
+			"sys_id":         {}, // completeness sentinel
+			"sys_updated_on": {},
+			"sys_mod_count":  {},
+		},
+	}
+	// A real system field still passes strict validation.
+	if err := m.ValidateStrict([]string{"state", "sys_updated_on"}); err != nil {
+		t.Fatalf("real sys_ field rejected on write path: %v", err)
+	}
+	// A sys_ typo is caught, with a did-you-mean pointing at the real field.
+	err := m.ValidateStrict([]string{"sys_update_on"})
+	if err == nil {
+		t.Fatal("sys_ typo must fail strict validation")
+	}
+	if !strings.Contains(err.Error(), `"sys_updated_on"`) {
+		t.Errorf("strict error should suggest the real field: %q", err)
+	}
+	// The lenient read path still accepts the same typo (unchanged behavior).
+	if err := m.Validate([]string{"sys_update_on"}); err != nil {
+		t.Fatalf("read path must keep the sys_ bypass: %v", err)
+	}
+	// The ACL-filtered guard is shared: a partial dictionary (no sys_id row)
+	// cannot prove a field wrong, so strict validation still skips it.
+	partial := &TableMeta{Name: "task", Fields: map[string]Field{"state": {}}}
+	if err := partial.ValidateStrict([]string{"sys_update_on", "whatever"}); err != nil {
+		t.Fatalf("strict must skip an incomplete dictionary: %v", err)
+	}
+}
+
 func TestSuggestSubstringFallback(t *testing.T) {
 	m := testMeta()
 	got := m.Suggest("descr")

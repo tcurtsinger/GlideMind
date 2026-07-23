@@ -74,6 +74,7 @@ func newRootCmd() *cobra.Command {
 		newSchemaCmd(),
 		newTablesCmd(),
 		newAttachCmd(),
+		newUpdateCmd(),
 		newAPICmd(),
 		newWhoamiCmd(),
 		newProfileCmd(),

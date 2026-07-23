@@ -59,7 +59,7 @@ func newProfileWritableCmd(name string, enable bool) *cobra.Command {
 			if err := f.Save(); err != nil {
 				return err
 			}
-			state := "writable — non-GET `glm api` calls run with --yes"
+			state := "writable — every write (update, non-GET api) still needs --yes"
 			if !enable {
 				state = "read-only"
 			}
