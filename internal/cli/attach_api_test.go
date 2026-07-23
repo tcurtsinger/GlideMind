@@ -72,10 +72,18 @@ func TestAttachGetDownloads(t *testing.T) {
 	}
 
 	// Default name in the CWD; a second run must refuse to overwrite.
-	t.Chdir(t.TempDir())
+	cwd := t.TempDir()
+	t.Chdir(cwd)
 	runGlm(t, srv, "", "attach", "get", sysIDc)
 	if _, _, err := runGlmErr(t, srv, "", "attach", "get", sysIDc); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("derived-name overwrite must be refused, got: %v", err)
+	}
+	// The staging temp must be cleaned up — only the final file remains.
+	entries, _ := os.ReadDir(cwd)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".glm") {
+			t.Errorf("staging temp left behind: %s", e.Name())
+		}
 	}
 
 	// -o - streams the bytes to stdout.

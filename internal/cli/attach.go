@@ -178,23 +178,31 @@ func newAttachGetCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				// Claim the target atomically with O_EXCL — no stat/rename
-				// race, and since we create it fresh there is no existing
-				// data a failed download could truncate.
-				f, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-				if os.IsExist(err) {
-					return fmt.Errorf("%s already exists - pass -o <path> to choose a destination", target)
-				}
+				// Derived name: stream to a sibling temp so an interrupted
+				// download never leaves a partial under the real name, then
+				// claim the final name with a hard link. os.Link fails atomically
+				// if the target already exists — no clobber and no stat/rename
+				// race, while crash-safety is preserved.
+				f, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".glm*")
 				if err != nil {
 					return err
 				}
+				tmp := f.Name()
 				n, err = client.DownloadAttachment(ctx, id, f)
 				if cerr := f.Close(); err == nil {
 					err = cerr
 				}
 				if err != nil {
-					os.Remove(target) //nolint:errcheck
+					os.Remove(tmp) //nolint:errcheck
 					return err
+				}
+				linkErr := os.Link(tmp, target)
+				os.Remove(tmp) //nolint:errcheck
+				if linkErr != nil {
+					if os.IsExist(linkErr) {
+						return fmt.Errorf("%s already exists - pass -o <path> to choose a destination", target)
+					}
+					return linkErr
 				}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), target)
