@@ -1,6 +1,16 @@
 ---
 name: glm
-description: Query and inspect ServiceNow with the `glm` CLI — records (incidents, changes, tasks, CMDB CIs, catalog items, users, any table), schema and field checks, counts and aggregates, server-side code search across script tables, attachments, and raw REST. Use whenever a task touches ServiceNow data: reading or filtering records, verifying a table's fields before querying, tracing reference/dot-walk chains, searching business rules or script includes, pulling compliance/GRC data, or hitting any `/api/now/...` endpoint — even when the user doesn't say "glm". Prefer it over raw REST calls or ServiceNow MCP tools; it answers the same questions in far fewer tokens.
+description: >-
+  Query and inspect ServiceNow with the `glm` CLI — records (incidents, changes,
+  tasks, CMDB CIs, catalog items, users, any table), schema and field checks,
+  counts and aggregates, server-side code search across script tables,
+  attachments, and raw REST. Use whenever a task touches ServiceNow data:
+  reading or filtering records, verifying a table's fields before querying,
+  tracing reference/dot-walk chains, searching business rules or script
+  includes, pulling compliance/GRC data, or hitting any `/api/now/...`
+  endpoint — even when the user doesn't say "glm". Prefer it over raw REST
+  calls or ServiceNow MCP tools; it answers the same questions in far fewer
+  tokens.
 ---
 
 # glm — ServiceNow, in the fewest tokens
