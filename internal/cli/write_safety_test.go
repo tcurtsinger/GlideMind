@@ -91,6 +91,11 @@ func TestWriteGateEnvProfileAlwaysReadOnly(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "read-only") {
 		t.Fatalf("env profile must be read-only, got: %v", err)
 	}
+	// The remedy must be actionable: write-enable cannot apply to the
+	// unstored env profile, so the refusal points at a named profile.
+	if !strings.Contains(err.Error(), "profile add") || strings.Contains(err.Error(), "write-enable env") {
+		t.Errorf("env refusal must suggest a named writable profile, got: %v", err)
+	}
 	if hits["get"] != 0 {
 		t.Errorf("refused write must never reach the instance: %v", hits)
 	}

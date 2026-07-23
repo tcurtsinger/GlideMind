@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tcurtsinger/GlideMind/internal/audit"
+	"github.com/tcurtsinger/GlideMind/internal/config"
 	"github.com/tcurtsinger/GlideMind/internal/output"
 )
 
@@ -72,6 +73,11 @@ func newAPICmd() *cobra.Command {
 			// it has no entry in, and not a hang consuming a --body @- stdin
 			// it would never send.
 			if method != http.MethodGet && !res.Profile.Writable {
+				if res.Name == config.EnvProfileName {
+					// The env profile is not stored, so write-enable can
+					// never apply to it — point at the real remedy.
+					return fmt.Errorf("the %s env profile is always read-only — writes need a named, write-enabled profile: `glm profile add <name> --instance <url> --username <user> --writable`", config.EnvInstance)
+				}
 				return fmt.Errorf("profile %q is read-only — enable writes with `glm profile write-enable %s` (each write still needs --yes)", res.Name, res.Name)
 			}
 
