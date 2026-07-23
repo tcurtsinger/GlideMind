@@ -128,12 +128,21 @@ func TestWhoamiPaginatesRoles(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)
 
-	stdout, _ := runGlm(t, srv, "", "whoami")
 	// 250 grants exist across two pages; a single 200 window would undercount.
-	if !strings.Contains(stdout, "(250)") {
-		t.Errorf("whoami must paginate all roles, got:\n%s", stdout)
+	// Default output previews a few and names the true total.
+	stdout, _ := runGlm(t, srv, "", "whoami")
+	if !strings.Contains(stdout, "250 total") || !strings.Contains(stdout, "--full for all") {
+		t.Errorf("whoami should preview roles and name the paginated total, got:\n%s", stdout)
 	}
 	if hits["whoami-roles"] < 2 {
 		t.Errorf("expected at least two role pages, got %d", hits["whoami-roles"])
+	}
+	// --full lists every role (exact count, no preview marker).
+	stdout, _ = runGlm(t, srv, "", "whoami", "--full")
+	if !strings.Contains(stdout, "(250)") || strings.Contains(stdout, "more (") {
+		t.Errorf("whoami --full must list all roles, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "role_249") {
+		t.Errorf("whoami --full must include roles past the preview window")
 	}
 }
