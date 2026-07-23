@@ -248,6 +248,18 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 		writeResult(w, rows)
 	})
 	mux.HandleFunc("/api/now/table/incident", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			bump("post")
+			var body map[string]string
+			if json.NewDecoder(r.Body).Decode(&body) == nil {
+				for k, v := range body {
+					bump("set-" + k + "=" + v)
+				}
+			}
+			// Echo the created record's identity, as the Table API does.
+			writeResult(w, map[string]any{"sys_id": sysIDa, "number": "INC0000042"})
+			return
+		}
 		bump("list")
 		q := r.URL.Query().Get("sysparm_query")
 		if strings.Contains(q, "ORDERBYsys_id") {
