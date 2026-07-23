@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/tcurtsinger/GlideMind/internal/audit"
 	"github.com/tcurtsinger/GlideMind/internal/config"
+	"github.com/tcurtsinger/GlideMind/internal/secret"
 )
 
 // TestWriteGateReadOnlyProfile pins DESIGN-WRITES.md W1 gate 1: a profile
@@ -44,6 +46,34 @@ func TestWriteGateReadOnlyProfile(t *testing.T) {
 	}
 }
 
+// TestWriteGateFiresWithoutCredentials: the W1 refusal must not depend on a
+// credential existing — a read-only profile with no keyring entry and no
+// GLM_PASSWORD still gets the one-line remedy, not a credential-lookup
+// error. (Passing also proves the gate runs before the client is built:
+// a credential lookup for this profile would fail.)
+func TestWriteGateFiresWithoutCredentials(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+	pointConfigAt(t) // clears ambient GLM_* env, including any password path
+	t.Setenv(secret.EnvPassword, "")
+	f := &config.File{Profiles: map[string]config.Profile{
+		"ro": {Instance: srv.URL, Auth: "basic", Username: "svc.glm"},
+	}}
+	if err := f.Save(); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	var out, errOut bytes.Buffer
+	root := newRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{"api", "DELETE", "/api/now/table/incident/" + sysIDa, "-p", "ro", "--yes"})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("gate must refuse before credential lookup, got: %v", err)
+	}
+}
+
 // TestWriteGateEnvProfileAlwaysReadOnly: the GLM_INSTANCE env profile has no
 // stored writable property, so it is read-only, period — env-only write
 // access would be the invisible-state gate W1 rejects.
@@ -71,7 +101,10 @@ func TestWriteAuditTrail(t *testing.T) {
 	t.Setenv("GLM_TEST_AUDIT_OWNER", t.Name()) // keep runGlm from re-pointing it
 
 	runGlm(t, srv, "", "api", "DELETE", "/api/now/table/incident/"+sysIDa, "-p", "w", "--yes")
-	runGlm(t, srv, "", "api", "PATCH", "/api/now/table/incident/"+sysIDa, "-p", "w", "--yes",
+	// Query values ride in both the embedded path query and -f — the audit
+	// must keep their NAMES only (encoded queries can carry record data).
+	runGlm(t, srv, "", "api", "PATCH", "/api/now/table/incident/"+sysIDa+"?sysparm_query=numberLIKEsecret-query-value", "-p", "w", "--yes",
+		"-f", "sysparm_fields=state",
 		"--body", `{"state":"6","close_notes":"resolved by glm"}`)
 
 	data, err := os.ReadFile(logPath)
@@ -91,14 +124,19 @@ func TestWriteAuditTrail(t *testing.T) {
 		t.Errorf("audit entry mismatch: %+v", e)
 	}
 	if e.Target != "/api/now/table/incident/"+sysIDa {
-		t.Errorf("audit target mismatch: %q", e.Target)
+		t.Errorf("audit target must be the query-stripped path: %q", e.Target)
+	}
+	if len(e.Params) != 2 || e.Params[0] != "sysparm_fields" || e.Params[1] != "sysparm_query" {
+		t.Errorf("audit must record sorted query parameter names: %v", e.Params)
 	}
 	if len(e.Fields) != 2 || e.Fields[0] != "close_notes" || e.Fields[1] != "state" {
 		t.Errorf("audit must record sorted field names: %v", e.Fields)
 	}
-	// Names only — the values must not be at rest in the local log.
-	if strings.Contains(string(data), "resolved by glm") {
-		t.Errorf("audit log must not contain field values:\n%s", data)
+	// Names only — no body or query values at rest in the local log.
+	for _, leak := range []string{"resolved by glm", "secret-query-value"} {
+		if strings.Contains(string(data), leak) {
+			t.Errorf("audit log must not contain value %q:\n%s", leak, data)
+		}
 	}
 
 	// GETs never audit.

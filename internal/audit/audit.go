@@ -27,7 +27,8 @@ type Entry struct {
 	User     string    `json:"user"`
 	Command  string    `json:"command"` // e.g. "api"; later "create"/"update"/"delete"
 	Method   string    `json:"method"`
-	Target   string    `json:"target"`           // path (api) or table/key (verbs)
+	Target   string    `json:"target"`           // query-stripped path (api) or table/key (verbs)
+	Params   []string  `json:"params,omitempty"` // query parameter names only — no values
 	Fields   []string  `json:"fields,omitempty"` // field names only — no values
 	Result   string    `json:"result"`
 }

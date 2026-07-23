@@ -68,19 +68,24 @@ func newAPICmd() *cobra.Command {
 				return fmt.Errorf("--body is not valid JSON")
 			}
 
-			client, res, err := clientFor(cmd, "")
+			res, err := resolveProfile(cmd, "")
+			if err != nil {
+				return err
+			}
+			// Gate 1 (DESIGN-WRITES.md W1): the profile itself must be
+			// write-enabled — a stored, deliberate property. This fires
+			// before the client is even built: a profile that could never
+			// write must get the one-line refusal naming the fix, not a
+			// credential-lookup error from a keyring it has no entry in.
+			if method != http.MethodGet && !res.Profile.Writable {
+				return fmt.Errorf("profile %q is read-only — enable writes with `glm profile write-enable %s` (each write still needs --yes)", res.Name, res.Name)
+			}
+			client, err := clientForResolved(cmd, res)
 			if err != nil {
 				return err
 			}
 
 			if method != http.MethodGet {
-				// Gate 1 (DESIGN-WRITES.md W1): the profile itself must be
-				// write-enabled — a stored, deliberate property. This fires
-				// before any preview: a profile that cannot write at all
-				// should fail in one line, not walk through a confirm flow.
-				if !res.Profile.Writable {
-					return fmt.Errorf("profile %q is read-only — enable writes with `glm profile write-enable %s` (each write still needs --yes)", res.Name, res.Name)
-				}
 				// Gate 2: per-command confirmation. Show exactly what will go
 				// on the wire — the same URL Raw builds, so an approved --yes
 				// write matches the preview even when the path carries its
@@ -110,6 +115,7 @@ func newAPICmd() *cobra.Command {
 				if err != nil {
 					result = "error"
 				}
+				target, params := scrubTarget(path, q)
 				if aerr := audit.Append(audit.Entry{
 					Time:     time.Now().UTC(),
 					Instance: res.Profile.Instance,
@@ -117,7 +123,8 @@ func newAPICmd() *cobra.Command {
 					User:     res.Profile.Username,
 					Command:  "api",
 					Method:   method,
-					Target:   path,
+					Target:   target,
+					Params:   params,
 					Fields:   audit.BodyFieldNames(payload),
 					Result:   result,
 				}); aerr != nil {
@@ -136,6 +143,30 @@ func newAPICmd() *cobra.Command {
 	cmd.Flags().BoolVar(&full, "full", false, "no truncation of long values")
 	cmd.Flags().BoolVar(&noAudit, "no-audit", false, "skip the local write audit log for this call")
 	return cmd
+}
+
+// scrubTarget prepares an audit-safe target: the path with any query string
+// removed, plus the sorted NAMES of query parameters from both the embedded
+// path query and -f. Query values (encoded queries, scripted REST params)
+// can carry record data or secrets, and the audit contract is names-only at
+// rest (DESIGN-WRITES.md W6).
+func scrubTarget(path string, q url.Values) (string, []string) {
+	target, rawQuery, _ := strings.Cut(path, "?")
+	names := map[string]bool{}
+	if vals, err := url.ParseQuery(rawQuery); err == nil {
+		for k := range vals {
+			names[k] = true
+		}
+	}
+	for k := range q {
+		names[k] = true
+	}
+	params := make([]string, 0, len(names))
+	for k := range names {
+		params = append(params, k)
+	}
+	sort.Strings(params)
+	return target, params
 }
 
 // maxAPIBody caps a request body read from @- or @file so unbounded stdin or
