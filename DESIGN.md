@@ -43,7 +43,14 @@ read path around an agent answering a question with minimal context spend: progr
 discovery (tables → schema → fields → records), display-value rendering, empty-field omission,
 truncation that always says how to get the rest.
 
-**Anti-goals (v1):** endpoint breadth, write operations, MCP server mode, OSS community support.
+**Anti-goals (v1):** endpoint breadth, MCP server mode, OSS community support. General write
+operations remain deferred; the one deliberate exception is `glm api` with a non-GET method,
+which prints the request and requires `--yes` (Decision 18, §12).
+
+> **As-built note (2026-07-22).** This section states original intent. Where the shipped v1
+> differs, the text below is annotated inline — search "as-built". A capability table generated
+> from the command registry is the authoritative surface; `glm prime` is the closest current
+> proxy.
 
 ## 2. Architecture
 
@@ -64,7 +71,8 @@ glm query <table> [-q <encoded>]... [--fields a,b,c] [--limit N] [--offset N] [-
 glm get <table> <sys_id|number|name> [--fields ...] [--full]    # accepts '-' to read keys from stdin
 glm count <table> [-q ...]
 glm agg <table> --group-by <field> [--count|--sum f|--avg f|--min f|--max f] [-q ...]
-glm schema <table> [--refresh]        # compact: field name, type, ref target, choice count
+glm schema <table> [--refresh]        # compact: field name, type, ref target, mandatory
+                                      # (as-built: emits mandatory, not a choice count)
 glm tables [pattern]                  # find tables by name/label
 glm attach list <table> <key> | glm attach get <sys_id> [-o path]
 glm grep <pattern> [--tables t1,t2] [--scope x_foo]   # code search across script fields
@@ -87,7 +95,9 @@ glm prime                             # agent cheatsheet, ~400 tokens, generated
 
 - `get` resolves human keys (INC0012345, a name) not just sys_ids, and shows **all non-empty
   fields** — empty-field omission alone drops a typical incident payload by more than half.
-- Global flags: `--profile/-p`, `--json`, `--raw`, `--full`, `--format`, `--timeout`, `--verbose`.
+- Flags: `--profile/-p`, `--json`, `--format`, `--timeout`, `--verbose` are global (persistent).
+  As-built, `--raw` and `--full` are command-local (registered on the read commands that use
+  them), not global.
 
 ## 4. Output contract
 
@@ -123,13 +133,17 @@ and docs while removing platform round-tripping.
 
 ## 7. Bounds & truncation
 
-- `--limit 25` default; `--all` streams complete JSONL for exports.
-- Table cells hard-truncated ~160 chars; JSON field values soft-capped 2,000 chars; `--full` lifts caps.
+- `--limit 25` default. (`--all` is deferred — not implemented in v1; page with `--offset`
+  using the stderr `next:` hint.)
+- Table cells hard-truncated ~160 chars; JSON/detail field values soft-capped 2,000 chars;
+  `--full` lifts caps.
 - **Data on stdout; summary + pagination on stderr** (`rows 1–25 of 1,847 · next: --offset 25`) —
   pipes stay clean, humans and agents still see it.
-- Every truncation marker names the exact follow-up command
-  (`…[+3.2KB — glm get incident INC0012345 --fields description --full]`).
-  An agent must never dead-end on a cut-off value.
+- Every truncation carries a marker so an agent never dead-ends on a cut-off value. As-built,
+  the marker shows how to lift the cap (`…[+N chars — use --full]` on JSON/detail fields; a
+  bare `…` on table cells); `grep`'s remainder marker names the exact follow-up command
+  (`+N more matches (glm get <table> <sys_id> --fields <f> --full)`). A per-field marker that
+  reconstructs the full `glm get` command everywhere is a future enhancement.
 
 ## 8. Errors, exit codes
 
@@ -142,14 +156,20 @@ and docs while removing platform round-tripping.
 
 - Named profiles (instance URL, auth method, defaults) in a plain config file — **no secrets in it**.
 - Secrets in the OS keyring (Windows Credential Manager / macOS Keychain / Secret Service).
-- Everything overridable by env vars (`GLM_PROFILE`, `GLM_INSTANCE`, `GLM_TOKEN`,
-  `GLM_CLIENT_ID`/`GLM_CLIENT_SECRET`…) so containers/CI work with zero code changes.
-- v1 methods: basic auth + OAuth client-credentials. Interactive PKCE: later.
+- Everything overridable by env vars so containers/CI work with zero code changes. As-built,
+  the recognized vars are `GLM_PROFILE`, `GLM_INSTANCE`, `GLM_USERNAME`, `GLM_PASSWORD`, and
+  `GLM_CACHE_DIR`. The token/OAuth vars (`GLM_TOKEN`, `GLM_CLIENT_ID`/`GLM_CLIENT_SECRET`) are
+  deferred with their auth method.
+- v1 method as-built: **basic auth only** (non-basic profiles are rejected). OAuth
+  client-credentials and interactive PKCE are both deferred (§"Deferred"). MFA-enforced
+  instances need a web-service-only service account until OAuth lands.
 
 ## 10. Agent onboarding
 
-- `glm prime` emits a ~400-token cheatsheet (verbs, encoded-query reminders, output contract,
+- `glm prime` emits a compact cheatsheet (verbs, encoded-query reminders, output contract,
   pagination pattern, pipe idioms) **generated from the command registry** — cannot drift.
+  As-built it measures ~640 tokens (a budget test bounds it); the earlier "~400" figure
+  predated the economy-conventions block.
 - Repo ships a thin Claude Code skill whose body is essentially "run `glm prime`, then work."
   Works identically for any agent runner.
 
@@ -204,7 +224,13 @@ The four workloads glm must serve, per actual usage:
 - HTTP: 30s default timeout (`--timeout`), retry with backoff+jitter on 429/503, honor Retry-After.
 - Reads use the Table API with `sysparm_display_value` chosen per format; `sysparm_exclude_reference_link=true`.
 - Config: `%APPDATA%\glidemind\config.toml` (XDG paths elsewhere).
-- Repo layout: `cmd/glm` (CLI) + `internal/core` (transport-agnostic engine) + `internal/snow` (API client).
+- Repo layout intent: `cmd/glm` (CLI) + a transport-agnostic engine + API client. As-built,
+  the engine is split across `internal/snow` (client), `internal/schema` (cache + derivation),
+  and `internal/output` (renderers), with `internal/cli` holding arg-parsing and command
+  wiring; there is no single `internal/core` package. Behavior is transport-agnostic (no TTY
+  access or os.Exit below `internal/cli`), which is the property §2 actually requires; a
+  future facade consumes these packages directly. Some behavior still lives in CLI command
+  closures and would move to the engine when the facade is built.
 
 ## Deferred (explicitly not designed yet)
 

@@ -11,7 +11,7 @@ import (
 func newPrimeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "prime",
-		Short: "Print the agent cheatsheet (~400 tokens)",
+		Short: "Print the agent cheatsheet (~640 tokens)",
 		Long: "Emits a compact orientation for AI agents: every command with its\n" +
 			"synopsis plus the shared conventions. The command list is generated\n" +
 			"from the live registry, so it cannot drift from the binary.",
@@ -52,7 +52,7 @@ Conventions:
   chain glm query <t> ... --format ids | glm get <t> - --json; filter big output in the
   shell so bulk data never enters your context.
 - agg: --group-by <field> [--sum f|--avg f|--min f|--max f] - count is implied.
-- Truncated values end in a marker naming the exact follow-up command; --full lifts caps.
+- Truncated values end in a marker; --full lifts caps. grep's remainder marker names the exact glm get to run.
 - Discover: glm tables <pattern>, then glm schema <table>. Errors suggest corrections.
 - get keys: sys_id, record number, or display value. --profile/-p picks the instance.
 `)
