@@ -27,6 +27,22 @@ func TestHumanFormatsSanitizeTerminalControls(t *testing.T) {
 	}
 }
 
+func TestSanitizeLineFlattensAndStrips(t *testing.T) {
+	// Single-line status fields (grep names/lines, attachment summaries) must
+	// neutralize newlines and CR too, not just other control chars — an
+	// embedded \n injects a line, \r returns to column 0.
+	got := SanitizeLine("name\r\nFAKE: injected\x1b[2Kline")
+	if strings.ContainsAny(got, "\r\n\t") {
+		t.Errorf("newline/CR/tab must be folded to spaces: %q", got)
+	}
+	if strings.ContainsRune(got, 0x1b) {
+		t.Errorf("control chars must be stripped: %q", got)
+	}
+	if !strings.Contains(got, "name") || !strings.Contains(got, "injected") {
+		t.Errorf("legitimate text must survive: %q", got)
+	}
+}
+
 func TestMachineFormatsStayLossless(t *testing.T) {
 	// json/jsonl must not sanitize: control bytes are encoded (not replaced
 	// with U+FFFD), so they round-trip byte-for-byte.

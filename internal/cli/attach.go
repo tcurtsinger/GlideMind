@@ -135,7 +135,7 @@ func newAttachGetCmd() *cobra.Command {
 				name = id
 			}
 			summary := func(n int64) {
-				fmt.Fprintf(cmd.ErrOrStderr(), "%s - %d bytes (%s)\n", output.Sanitize(name), n, output.Sanitize(output.Value(meta, "content_type")))
+				fmt.Fprintf(cmd.ErrOrStderr(), "%s - %d bytes (%s)\n", output.SanitizeLine(name), n, output.SanitizeLine(output.Value(meta, "content_type")))
 			}
 
 			if dest == "-" {

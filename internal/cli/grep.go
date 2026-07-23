@@ -263,11 +263,11 @@ func newGrepCmd() *cobra.Command {
 			default:
 				for _, m := range matches {
 					for _, l := range m.lines {
-						fmt.Fprintf(out, "%s:%s:%d: %s\n", m.target.table, output.Sanitize(m.name), l.number, output.Sanitize(l.text))
+						fmt.Fprintf(out, "%s:%s:%d: %s\n", m.target.table, output.SanitizeLine(m.name), l.number, output.SanitizeLine(l.text))
 					}
 					if m.more > 0 {
 						fmt.Fprintf(out, "%s:%s: +%d more matches (glm get %s %s --fields %s --full)\n",
-							m.target.table, output.Sanitize(m.name), m.more, m.target.table, m.sysID, m.target.field)
+							m.target.table, output.SanitizeLine(m.name), m.more, m.target.table, m.sysID, m.target.field)
 					}
 				}
 			}

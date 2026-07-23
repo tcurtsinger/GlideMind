@@ -82,9 +82,11 @@ func oneLine(s string) string {
 	}, s)
 }
 
-// Sanitize is the exported form of sanitizeControls, for commands that print
-// server-controlled text directly (grep match lines, attachment summaries).
-func Sanitize(s string) string { return sanitizeControls(s) }
+// SanitizeLine makes server-controlled text safe for a single-line status
+// context (grep match lines, attachment summaries): it strips control
+// characters AND folds tab/newline/CR to spaces, so an embedded newline or
+// carriage return cannot inject extra lines or return to column 0.
+func SanitizeLine(s string) string { return oneLine(s) }
 
 // sanitizeControls replaces terminal control characters — which server data
 // carries (ticket text, scripts, attachment names) — with the Unicode
