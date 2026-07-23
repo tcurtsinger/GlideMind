@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version-file: go.mod
       - name: gofmt
         shell: bash
         run: |
@@ -29,3 +29,13 @@ jobs:
       - run: go vet ./...
       - run: go build ./...
       - run: go test ./...
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # grep searches tables concurrently; the race detector guards that path.
+      - run: go test -race ./...

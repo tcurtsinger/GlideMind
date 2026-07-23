@@ -101,6 +101,22 @@ func newAPICmd() *cobra.Command {
 	return cmd
 }
 
+// maxAPIBody caps a request body read from @- or @file so unbounded stdin or
+// a huge file cannot exhaust memory before validation.
+const maxAPIBody = 8 << 20
+
+// readCapped reads at most maxAPIBody bytes, erroring if the source is larger.
+func readCapped(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxAPIBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxAPIBody {
+		return nil, fmt.Errorf("request body exceeds %d MiB", maxAPIBody>>20)
+	}
+	return data, nil
+}
+
 // readBodyArg resolves --body: a literal JSON string, @file, or @- (stdin).
 // A leading UTF-8 BOM is stripped — PowerShell pipes and Windows editors
 // prepend one, and a BOM is invalid JSON.
@@ -111,9 +127,14 @@ func readBodyArg(cmd *cobra.Command, body string) ([]byte, error) {
 	case body == "":
 		return nil, nil
 	case body == "@-":
-		data, err = io.ReadAll(cmd.InOrStdin())
+		data, err = readCapped(cmd.InOrStdin())
 	case strings.HasPrefix(body, "@"):
-		data, err = os.ReadFile(body[1:])
+		f, oerr := os.Open(body[1:])
+		if oerr != nil {
+			return nil, oerr
+		}
+		data, err = readCapped(f)
+		f.Close()
 	default:
 		data = []byte(body)
 	}

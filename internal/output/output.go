@@ -68,18 +68,49 @@ func truncateCell(s string, full bool) string {
 	return string(runes[:CellMax-1]) + "…"
 }
 
-// oneLine keeps tabular cells on a single row.
+// oneLine keeps tabular cells on a single row and strips control characters
+// so server-supplied content cannot hijack the terminal.
 func oneLine(s string) string {
-	if !strings.ContainsAny(s, "\r\n\t") {
-		return s
-	}
-	s = strings.ReplaceAll(s, "\r\n", " ")
 	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
 			return ' '
+		case isUnsafeControl(r):
+			return '�'
 		}
 		return r
 	}, s)
+}
+
+// Sanitize is the exported form of sanitizeControls, for commands that print
+// server-controlled text directly (grep match lines, attachment summaries).
+func Sanitize(s string) string { return sanitizeControls(s) }
+
+// sanitizeControls replaces terminal control characters — which server data
+// carries (ticket text, scripts, attachment names) — with the Unicode
+// replacement char, so rendering to a terminal cannot be hijacked. Tab,
+// newline, and carriage return are preserved for multi-line human output.
+// Machine formats (json/jsonl) never call this and stay byte-for-byte lossless.
+func sanitizeControls(s string) string {
+	if !strings.ContainsFunc(s, isUnsafeControl) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if isUnsafeControl(r) {
+			return '�'
+		}
+		return r
+	}, s)
+}
+
+// isUnsafeControl reports whether r is a control character that could alter
+// terminal state — every C0 control except the whitespace glm handles, plus
+// DEL and the C1 range (ESC-less CSI/OSC introducers on some terminals).
+func isUnsafeControl(r rune) bool {
+	if r == '\t' || r == '\n' || r == '\r' {
+		return false
+	}
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
 }
 
 // Records renders a list result set to w.
@@ -108,7 +139,7 @@ func Records(w io.Writer, fields []string, recs []map[string]any, opts Options) 
 		for _, r := range recs {
 			row := make([]string, len(fields))
 			for i, f := range fields {
-				row[i] = truncateCell(Value(r, f), opts.Full)
+				row[i] = sanitizeControls(truncateCell(Value(r, f), opts.Full))
 			}
 			if err := cw.Write(row); err != nil {
 				return err
@@ -237,7 +268,7 @@ func RecordDetail(w io.Writer, rec map[string]any, fields []string, opts Options
 		}
 	}
 	for _, k := range fields {
-		fmt.Fprintf(w, "%-*s  %s\n", width, k, TruncateField(Value(rec, k), opts.Full))
+		fmt.Fprintf(w, "%-*s  %s\n", width, k, sanitizeControls(TruncateField(Value(rec, k), opts.Full)))
 	}
 	return nil
 }

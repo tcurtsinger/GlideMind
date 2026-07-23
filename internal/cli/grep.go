@@ -14,6 +14,10 @@ import (
 	"github.com/tcurtsinger/GlideMind/internal/output"
 )
 
+// maxGrepWorkers bounds concurrent table searches so a large --tables list
+// cannot fire one request per target simultaneously.
+const maxGrepWorkers = 8
+
 // grepTarget is one table/field pair to search.
 type grepTarget struct {
 	table string
@@ -91,11 +95,18 @@ func newGrepCmd() *cobra.Command {
 			targets := defaultGrepTargets
 			if strings.TrimSpace(tables) != "" {
 				targets = nil
+				seen := map[string]bool{}
 				for _, entry := range splitFields(tables) {
 					table, field, ok := strings.Cut(entry, ":")
 					if !ok || field == "" {
 						field = "script"
 					}
+					// Dedupe so a repeated table[:field] isn't searched twice.
+					key := table + ":" + field
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
 					targets = append(targets, grepTarget{table: table, field: field})
 				}
 			}
@@ -106,11 +117,16 @@ func newGrepCmd() *cobra.Command {
 				warns   []string
 				capped  []string
 				wg      sync.WaitGroup
+				// Bound concurrency so a large --tables list can't open a
+				// request per target all at once.
+				sem = make(chan struct{}, maxGrepWorkers)
 			)
 			for _, tg := range targets {
 				wg.Add(1)
 				go func(tg grepTarget) {
 					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
 					clauses := []string{tg.field + "LIKE" + pattern}
 					if scope != "" {
 						clauses = append(clauses, "sys_scope.scope="+scope)
@@ -247,11 +263,11 @@ func newGrepCmd() *cobra.Command {
 			default:
 				for _, m := range matches {
 					for _, l := range m.lines {
-						fmt.Fprintf(out, "%s:%s:%d: %s\n", m.target.table, m.name, l.number, l.text)
+						fmt.Fprintf(out, "%s:%s:%d: %s\n", m.target.table, output.Sanitize(m.name), l.number, output.Sanitize(l.text))
 					}
 					if m.more > 0 {
 						fmt.Fprintf(out, "%s:%s: +%d more matches (glm get %s %s --fields %s --full)\n",
-							m.target.table, m.name, m.more, m.target.table, m.sysID, m.target.field)
+							m.target.table, output.Sanitize(m.name), m.more, m.target.table, m.sysID, m.target.field)
 					}
 				}
 			}
