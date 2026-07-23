@@ -276,6 +276,12 @@ func (c *Client) Raw(ctx context.Context, method, path string, query url.Values,
 		if len(data) > maxBodyBytes {
 			return nil, fmt.Errorf("response exceeds glm's %d MiB buffer - narrow the request (sysparm_limit, pagination, or a more specific endpoint)", maxBodyBytes>>20)
 		}
+		// A REST call returning HTML is almost always the UI login/session
+		// page, not data. Abort with one line instead of dumping the whole
+		// page to stdout (context economy is the point).
+		if ct := resp.Header.Get("Content-Type"); strings.Contains(strings.ToLower(ct), "text/html") {
+			return nil, &ProtocolError{Err: fmt.Errorf("instance returned an HTML page, not data (Content-Type: %s) - the session may have expired, or this path is a UI page rather than a REST endpoint", ct)}
+		}
 		return data, nil
 	}
 }

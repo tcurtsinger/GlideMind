@@ -51,12 +51,10 @@ func newGetCmd() *cobra.Command {
 
 			store := schemaStore(client)
 			explicit := splitFields(fields)
-			// Pre-flight typo check from cache only — never an extra call.
+			// Pre-flight typo check; self-heals a stale cache on a miss.
 			if len(explicit) > 0 {
-				if meta := store.GetCached(table); meta != nil {
-					if err := meta.Validate(explicit); err != nil {
-						return err
-					}
+				if err := validateFields(ctx, store, table, nil, explicit); err != nil {
+					return err
 				}
 			}
 			baseQuery := url.Values{}

@@ -59,11 +59,27 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 			rows = []map[string]any{{"name": "incident", "super_class.name": "task"}}
 		case strings.Contains(q, "name=task"):
 			rows = []map[string]any{{"name": "task", "super_class.name": ""}}
+		case strings.Contains(q, "name=evolving"):
+			rows = []map[string]any{{"name": "evolving", "super_class.name": ""}}
 		}
 		writeResult(w, rows)
 	})
 	mux.HandleFunc("/api/now/table/sys_dictionary", func(w http.ResponseWriter, r *http.Request) {
 		bump("schema")
+		if strings.Contains(r.URL.Query().Get("sysparm_query"), "evolving") {
+			bump("evolving-dict")
+			rows := []map[string]any{
+				{"name": "evolving", "element": "sys_id", "internal_type": "GUID", "display": "false"},
+				{"name": "evolving", "element": "name", "internal_type": "string", "display": "true"},
+			}
+			// "tier" exists only from the 2nd dictionary fetch on — simulating
+			// a field created after the first cache populate.
+			if hits["evolving-dict"] > 1 {
+				rows = append(rows, map[string]any{"name": "evolving", "element": "tier", "internal_type": "choice", "display": "false"})
+			}
+			writeResult(w, rows)
+			return
+		}
 		writeResult(w, []map[string]any{
 			{"name": "task", "element": "sys_id", "internal_type": "GUID", "display": "false", "reference.name": ""},
 			{"name": "task", "element": "number", "internal_type": "string", "display": "true", "reference.name": ""},
@@ -150,6 +166,11 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 	mux.HandleFunc("/api/now/table/long_story", func(w http.ResponseWriter, r *http.Request) {
 		bump("list")
 		writeResult(w, []map[string]any{{"sys_id": sysIDa, "tale": strings.Repeat("x", 2500)}})
+	})
+	mux.HandleFunc("/api/now/table/evolving", func(w http.ResponseWriter, r *http.Request) {
+		bump("evolving-list")
+		w.Header().Set("X-Total-Count", "1")
+		writeResult(w, []map[string]any{{"sys_id": sysIDa, "name": "Evolving One"}})
 	})
 	mux.HandleFunc("/api/now/table/fidelity", func(w http.ResponseWriter, r *http.Request) {
 		bump("list")
