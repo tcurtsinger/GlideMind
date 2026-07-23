@@ -148,6 +148,14 @@ func renderAPIResponse(cmd *cobra.Command, data []byte, full bool) error {
 		_, werr := out.Write(data)
 		return werr
 	}
+	// Decoder.Decode stops after the first value; json.Unmarshal used to
+	// reject trailing bytes. Preserve that: a body that is a JSON value
+	// plus appended data is not a clean document, so pass it through
+	// verbatim rather than silently dropping the tail.
+	if _, err := dec.Token(); err != io.EOF {
+		_, werr := out.Write(data)
+		return werr
+	}
 	// Unwrap the standard {result: ...} envelope when it is the whole story.
 	if m, ok := doc.(map[string]any); ok && len(m) == 1 {
 		if r, exists := m["result"]; exists {

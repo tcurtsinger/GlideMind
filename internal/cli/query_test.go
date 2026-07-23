@@ -159,6 +159,12 @@ func fakeInstance(t *testing.T, hits map[string]int) *httptest.Server {
 		w.Write([]byte(`{"result":{"big":9007199254740993,"flag":true,"empty":null,` + //nolint:errcheck
 			`"ref":{"value":"abc","display_value":"ABC","extra":"keep me"}}}`))
 	})
+	mux.HandleFunc("/api/now/table/trailing", func(w http.ResponseWriter, r *http.Request) {
+		bump("list")
+		// A JSON value with appended bytes: not a clean document, so glm
+		// must pass the whole body through verbatim, not drop the tail.
+		w.Write([]byte(`{"result":{"a":1}} then junk`)) //nolint:errcheck
+	})
 	mux.HandleFunc("/api/now/attachment/", func(w http.ResponseWriter, r *http.Request) {
 		bump("attach")
 		// sysIDd is the attachment whose download always fails.

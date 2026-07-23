@@ -196,6 +196,18 @@ func TestAPIMachineOutputIsFaithful(t *testing.T) {
 	}
 }
 
+func TestAPITrailingBytesPassThroughVerbatim(t *testing.T) {
+	hits := map[string]int{}
+	srv := fakeInstance(t, hits)
+
+	// A first JSON value followed by appended bytes is not a clean
+	// document; the whole body must survive, tail included.
+	stdout, _ := runGlm(t, srv, "", "api", "GET", "/api/now/table/trailing")
+	if !strings.Contains(stdout, "then junk") {
+		t.Errorf("trailing bytes were dropped instead of passed through:\n%s", stdout)
+	}
+}
+
 func TestAPIJSONFidelity(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)
