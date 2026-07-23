@@ -461,19 +461,20 @@ func (c *Client) Count(ctx context.Context, table, encodedQuery string) (int, er
 	return n, nil
 }
 
-// isLoginPage reports whether an HTML body is the ServiceNow login/session
-// page rather than legitimate HTML data. The markers appear near the top, so
-// only the head of the body is scanned. login.do is the reliable signal (the
-// login form always posts there) across instance versions.
+// isLoginPage reports whether an HTML body is the ServiceNow login page
+// rather than legitimate HTML data. Keying on structure — a form posting to
+// login.do AND a password input — avoids false positives on prose or links
+// that merely mention login.do or a session message. Only the head of the
+// body is scanned; the login form lives near the top.
 func isLoginPage(body []byte) bool {
 	head := body
-	if len(head) > 4096 {
-		head = head[:4096]
+	if len(head) > 16384 {
+		head = head[:16384]
 	}
 	lower := strings.ToLower(string(head))
-	return strings.Contains(lower, "login.do") ||
-		strings.Contains(lower, "you are not logged in") ||
-		strings.Contains(lower, "your session has expired")
+	postsToLogin := strings.Contains(lower, "login.do")
+	hasPasswordField := strings.Contains(lower, `type="password"`) || strings.Contains(lower, "type=password")
+	return postsToLogin && hasPasswordField
 }
 
 // apiError builds the typed error for a non-2xx response, extracting the

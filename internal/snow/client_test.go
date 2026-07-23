@@ -191,7 +191,8 @@ func TestRawAbortsOnLoginPage(t *testing.T) {
 	// whole document to the caller.
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
-		w.Write([]byte(`<!DOCTYPE html><html><body><form action="login.do">You are not logged in</form></body></html>`)) //nolint:errcheck
+		w.Write([]byte(`<!DOCTYPE html><html><body><form action="/login.do" method="post">` + //nolint:errcheck
+			`<input name="user_name"><input type="password" name="user_password"></form></body></html>`))
 	}))
 	data, err := c.Raw(context.Background(), http.MethodGet, "/api/now/table/incident", nil, nil)
 	if err == nil {
@@ -207,19 +208,27 @@ func TestRawAbortsOnLoginPage(t *testing.T) {
 }
 
 func TestRawPassesLegitimateHTML(t *testing.T) {
-	// glm api is a raw passthrough: HTML that is not the login page (a
-	// scripted resource, an HTML attachment) must flow through unchanged.
-	html := `<!DOCTYPE html><html><body><h1>Report</h1></body></html>`
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(html)) //nolint:errcheck
-	}))
-	data, err := c.Raw(context.Background(), http.MethodGet, "/api/x/report", nil, nil)
-	if err != nil {
-		t.Fatalf("legitimate HTML must pass through, got: %v", err)
+	// glm api is a raw passthrough: HTML that is not the login page must flow
+	// through unchanged — including a doc that merely mentions login.do in
+	// prose or a link, which must not be mistaken for the login form.
+	cases := map[string]string{
+		"plain":             `<!DOCTYPE html><html><body><h1>Report</h1></body></html>`,
+		"mentions login.do": `<html><body><p>To sign in, visit <a href="/login.do">login.do</a>.</p></body></html>`,
 	}
-	if string(data) != html {
-		t.Errorf("HTML body altered: %q", data)
+	for name, html := range cases {
+		t.Run(name, func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.Write([]byte(html)) //nolint:errcheck
+			}))
+			data, err := c.Raw(context.Background(), http.MethodGet, "/api/x/report", nil, nil)
+			if err != nil {
+				t.Fatalf("legitimate HTML must pass through, got: %v", err)
+			}
+			if string(data) != html {
+				t.Errorf("HTML body altered: %q", data)
+			}
+		})
 	}
 }
 
