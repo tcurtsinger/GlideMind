@@ -60,6 +60,21 @@ func newAPICmd() *cobra.Command {
 				q.Add(k, v)
 			}
 
+			res, err := resolveProfile(cmd, "")
+			if err != nil {
+				return err
+			}
+			// Gate 1 (DESIGN-WRITES.md W1): the profile itself must be
+			// write-enabled — a stored, deliberate property. This fires
+			// before ANYTHING with side effects or blocking potential: a
+			// profile that could never write must get the one-line refusal
+			// naming the fix, not a credential-lookup error from a keyring
+			// it has no entry in, and not a hang consuming a --body @- stdin
+			// it would never send.
+			if method != http.MethodGet && !res.Profile.Writable {
+				return fmt.Errorf("profile %q is read-only — enable writes with `glm profile write-enable %s` (each write still needs --yes)", res.Name, res.Name)
+			}
+
 			payload, err := readBodyArg(cmd, body)
 			if err != nil {
 				return err
@@ -68,18 +83,6 @@ func newAPICmd() *cobra.Command {
 				return fmt.Errorf("--body is not valid JSON")
 			}
 
-			res, err := resolveProfile(cmd, "")
-			if err != nil {
-				return err
-			}
-			// Gate 1 (DESIGN-WRITES.md W1): the profile itself must be
-			// write-enabled — a stored, deliberate property. This fires
-			// before the client is even built: a profile that could never
-			// write must get the one-line refusal naming the fix, not a
-			// credential-lookup error from a keyring it has no entry in.
-			if method != http.MethodGet && !res.Profile.Writable {
-				return fmt.Errorf("profile %q is read-only — enable writes with `glm profile write-enable %s` (each write still needs --yes)", res.Name, res.Name)
-			}
 			client, err := clientForResolved(cmd, res)
 			if err != nil {
 				return err

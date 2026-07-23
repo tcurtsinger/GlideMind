@@ -40,6 +40,12 @@ func TestWriteGateReadOnlyProfile(t *testing.T) {
 		t.Errorf("refused write must never reach the instance: %v", hits)
 	}
 
+	// The gate also fires before the body is touched: a missing @file (or a
+	// blocking @- stdin) must never be read for a write that could not run.
+	if _, _, err := runGlmErr(t, srv, "", "api", "POST", "/api/x", "--body", "@no-such-file.json", "-p", "ro", "--yes"); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("gate must refuse before reading the body, got: %v", err)
+	}
+
 	// Reads are unaffected by the write gate.
 	if _, _, err := runGlmErr(t, srv, "", "api", "GET", "/api/now/table/incident/"+sysIDa, "-p", "ro"); err != nil {
 		t.Errorf("reads must work on a read-only profile: %v", err)

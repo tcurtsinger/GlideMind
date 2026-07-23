@@ -312,10 +312,11 @@ func TestAPIEmptyResultHonorsMachineFormats(t *testing.T) {
 func TestAPIStdinBodyCapped(t *testing.T) {
 	hits := map[string]int{}
 	srv := fakeInstance(t, hits)
+	writableProfile(t, srv, "w") // the gate would otherwise refuse before the body is read
 
 	// An oversized piped body must be rejected before any request is sent.
 	big := strings.Repeat("x", (8<<20)+1)
-	_, _, err := runGlmErr(t, srv, big, "api", "POST", "/api/x", "--body", "@-", "--yes")
+	_, _, err := runGlmErr(t, srv, big, "api", "POST", "/api/x", "--body", "@-", "-p", "w", "--yes")
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Errorf("oversized stdin body should be rejected, got: %v", err)
 	}
@@ -328,7 +329,8 @@ func TestAPIRejectsBadInput(t *testing.T) {
 	if _, _, err := runGlmErr(t, srv, "", "api", "BREW", "/api/now/table/incident"); err == nil || !strings.Contains(err.Error(), "unsupported method") {
 		t.Errorf("unknown method should fail, got: %v", err)
 	}
-	if _, _, err := runGlmErr(t, srv, "", "api", "POST", "/x", "--body", "{not json", "--yes"); err == nil || !strings.Contains(err.Error(), "valid JSON") {
+	writableProfile(t, srv, "w") // past the gate, so the body path is what fails
+	if _, _, err := runGlmErr(t, srv, "", "api", "POST", "/x", "--body", "{not json", "-p", "w", "--yes"); err == nil || !strings.Contains(err.Error(), "valid JSON") {
 		t.Errorf("invalid body should fail before any request, got: %v", err)
 	}
 	if _, _, err := runGlmErr(t, srv, "", "api", "GET", "/x", "-f", "noequals"); err == nil || !strings.Contains(err.Error(), "k=v") {
@@ -348,12 +350,13 @@ func TestWindowsBOMTolerance(t *testing.T) {
 		t.Errorf("BOM-prefixed stdin key must resolve:\n%s", stdout)
 	}
 
-	// Same stream shape for a piped --body payload. The env profile is
-	// always read-only (DESIGN-WRITES.md W1), so a clean body reaches the
-	// write gate and fails THERE — a BOM-corrupted body would fail earlier
-	// with "not valid JSON", which is what this pins against.
-	if _, _, err := runGlmErr(t, srv, bom+`{"short_description":"x"}`, "api", "POST", "/api/now/table/incident", "--body", "@-", "--yes"); err == nil || strings.Contains(err.Error(), "valid JSON") {
-		t.Errorf("BOM-prefixed stdin body must validate as JSON before the write gate, got: %v", err)
+	// Same stream shape for a piped --body payload: on a writable profile
+	// (past the W1 gate) without --yes, a clean body is read, BOM-stripped,
+	// and JSON-validated, then the confirm gate refuses — so a "--yes"
+	// error proves BOM tolerance; a corrupted body would say "valid JSON".
+	writableProfile(t, srv, "w")
+	if _, _, err := runGlmErr(t, srv, bom+`{"short_description":"x"}`, "api", "POST", "/api/now/table/incident", "--body", "@-", "-p", "w"); err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Errorf("BOM-prefixed stdin body must survive validation and stop at the confirm gate, got: %v", err)
 	}
 }
 
