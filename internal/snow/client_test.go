@@ -186,23 +186,48 @@ func TestRawRejectsAbsolutePath(t *testing.T) {
 	}
 }
 
-func TestRawAbortsOnHTML(t *testing.T) {
-	// A REST call that returns the UI session page must abort with one line,
-	// never dump the whole HTML document to the caller.
+func TestRawAbortsOnLoginPage(t *testing.T) {
+	// The UI login/session page must abort with one line, never dump the
+	// whole document to the caller.
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
-		w.Write([]byte("<!DOCTYPE html><html><body>You are not logged in</body></html>")) //nolint:errcheck
+		w.Write([]byte(`<!DOCTYPE html><html><body><form action="login.do">You are not logged in</form></body></html>`)) //nolint:errcheck
 	}))
 	data, err := c.Raw(context.Background(), http.MethodGet, "/api/now/table/incident", nil, nil)
 	if err == nil {
-		t.Fatal("an HTML response must be an error, not returned data")
+		t.Fatal("the login page must be an error, not returned data")
 	}
 	if data != nil {
-		t.Error("the HTML body must not be handed back to the caller")
+		t.Error("the login page body must not be handed back to the caller")
 	}
 	var pe *ProtocolError
 	if !errors.As(err, &pe) {
-		t.Errorf("HTML response should be a ProtocolError, got %T", err)
+		t.Errorf("login page should be a ProtocolError, got %T", err)
+	}
+}
+
+func TestRawPassesLegitimateHTML(t *testing.T) {
+	// glm api is a raw passthrough: HTML that is not the login page (a
+	// scripted resource, an HTML attachment) must flow through unchanged.
+	html := `<!DOCTYPE html><html><body><h1>Report</h1></body></html>`
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(html)) //nolint:errcheck
+	}))
+	data, err := c.Raw(context.Background(), http.MethodGet, "/api/x/report", nil, nil)
+	if err != nil {
+		t.Fatalf("legitimate HTML must pass through, got: %v", err)
+	}
+	if string(data) != html {
+		t.Errorf("HTML body altered: %q", data)
+	}
+}
+
+func TestRawRejectsFragment(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	// A literal # would silently truncate the request to a fragment.
+	if _, err := c.Raw(context.Background(), http.MethodGet, "/api/x?sysparm_query=nameLIKEfoo#bar", nil, nil); err == nil {
+		t.Error("a path containing a literal # must be rejected, not truncated")
 	}
 }
 

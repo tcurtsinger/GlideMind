@@ -276,11 +276,11 @@ func (c *Client) Raw(ctx context.Context, method, path string, query url.Values,
 		if len(data) > maxBodyBytes {
 			return nil, fmt.Errorf("response exceeds glm's %d MiB buffer - narrow the request (sysparm_limit, pagination, or a more specific endpoint)", maxBodyBytes>>20)
 		}
-		// A REST call returning HTML is almost always the UI login/session
-		// page, not data. Abort with one line instead of dumping the whole
-		// page to stdout (context economy is the point).
-		if ct := resp.Header.Get("Content-Type"); strings.Contains(strings.ToLower(ct), "text/html") {
-			return nil, &ProtocolError{Err: fmt.Errorf("instance returned an HTML page, not data (Content-Type: %s) - the session may have expired, or this path is a UI page rather than a REST endpoint", ct)}
+		// glm api is a raw passthrough, so legitimate HTML (a scripted resource,
+		// an HTML attachment) must flow through. Only abort on the UI login/session
+		// page — the one HTML response that is never the data asked for.
+		if ct := resp.Header.Get("Content-Type"); strings.Contains(strings.ToLower(ct), "text/html") && isLoginPage(data) {
+			return nil, &ProtocolError{Err: fmt.Errorf("instance returned its login page, not data - the session/credentials may have expired (HTTP %d)", resp.StatusCode)}
 		}
 		return data, nil
 	}
@@ -297,6 +297,11 @@ func (c *Client) rawURL(path string, query url.Values) (*url.URL, error) {
 	}
 	if ref.IsAbs() || ref.Host != "" || ref.User != nil {
 		return nil, fmt.Errorf("request path must be a relative path, not %q", path)
+	}
+	// An unescaped # starts a URL fragment, which is never sent — silently
+	// truncating the request. Make the caller encode a literal # as %23.
+	if strings.Contains(path, "#") {
+		return nil, fmt.Errorf("request path must not contain a literal '#' (it starts a fragment that is never sent) — encode it as %%23: %q", path)
 	}
 	u := *c.base
 	u.Path = ref.Path
@@ -454,6 +459,21 @@ func (c *Client) Count(ctx context.Context, table, encodedQuery string) (int, er
 		return 0, &ProtocolError{Err: fmt.Errorf("unexpected count value %q from stats API", out.Result.Stats.Count)}
 	}
 	return n, nil
+}
+
+// isLoginPage reports whether an HTML body is the ServiceNow login/session
+// page rather than legitimate HTML data. The markers appear near the top, so
+// only the head of the body is scanned. login.do is the reliable signal (the
+// login form always posts there) across instance versions.
+func isLoginPage(body []byte) bool {
+	head := body
+	if len(head) > 4096 {
+		head = head[:4096]
+	}
+	lower := strings.ToLower(string(head))
+	return strings.Contains(lower, "login.do") ||
+		strings.Contains(lower, "you are not logged in") ||
+		strings.Contains(lower, "your session has expired")
 }
 
 // apiError builds the typed error for a non-2xx response, extracting the
