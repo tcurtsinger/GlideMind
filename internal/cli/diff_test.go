@@ -187,6 +187,44 @@ func TestDiffRecordMissingBoth(t *testing.T) {
 	}
 }
 
+// TestDiffEmptyJSONIsValidArray: an identical diff with --format json must
+// emit a valid empty array, not empty stdout that fails to unmarshal (Codex
+// review) — the same zero-row JSON convention as query.
+func TestDiffEmptyJSONIsValidArray(t *testing.T) {
+	rec := map[string]any{"sys_id": sysIDa, "state": "1"}
+	srvA := diffServer(t, "widget", diffFake{record: rec})
+	srvB := diffServer(t, "widget", diffFake{record: rec})
+	twoProfiles(t, srvA, srvB)
+
+	stdout, _ := runGlm(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b", "--format", "json")
+	var rows []map[string]string
+	if err := json.Unmarshal([]byte(stdout), &rows); err != nil {
+		t.Fatalf("identical diff --format json must be valid JSON, got %q: %v", stdout, err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("identical diff must be an empty array, got %v", rows)
+	}
+}
+
+// TestDiffJSONRendersRows: the non-empty JSON path stays a valid array of the
+// differing fields.
+func TestDiffJSONRendersRows(t *testing.T) {
+	recA := map[string]any{"sys_id": sysIDa, "state": "1"}
+	recB := map[string]any{"sys_id": sysIDa, "state": "9"}
+	srvA := diffServer(t, "widget", diffFake{record: recA})
+	srvB := diffServer(t, "widget", diffFake{record: recB})
+	twoProfiles(t, srvA, srvB)
+
+	stdout, _ := runGlm(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b", "--format", "json")
+	var rows []map[string]string
+	if err := json.Unmarshal([]byte(stdout), &rows); err != nil {
+		t.Fatalf("diff --format json must be valid JSON, got %q: %v", stdout, err)
+	}
+	if len(rows) != 1 || rows[0]["field"] != "state" || rows[0]["a"] != "1" || rows[0]["b"] != "9" {
+		t.Errorf("expected one state row (a=1, b=9), got %v", rows)
+	}
+}
+
 func widgetDict(stateType, only, ownerRef string) []map[string]any {
 	return []map[string]any{
 		{"name": "widget", "element": "sys_id", "internal_type": "GUID"},

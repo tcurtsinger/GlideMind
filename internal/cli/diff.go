@@ -208,17 +208,23 @@ func diffSchema(cmd *cobra.Command, clientA, clientB *snow.Client, nameA, nameB,
 }
 
 // renderDiff prints diff rows (field, A, B) to stdout and a summary to stderr.
-// Zero rows emit no table — just the "identical" summary — matching query's
-// "0 rows" convention so a machine consumer sees empty, not a bare header.
+// Machine formats (json/jsonl) always render, even with zero rows, so a
+// consumer gets valid output (json emits `[]`, not empty stdout that fails to
+// parse) — the same way query renders zero-row results. Human formats print a
+// table only when something differs; when identical the stderr summary is the
+// whole answer and a bare header would be noise.
 func renderDiff(cmd *cobra.Command, rows []map[string]any, nameA, nameB string, opts output.Options, diffSummary, sameSummary string) error {
+	machine := opts.Format == "json" || opts.Format == "jsonl"
+	if len(rows) > 0 || machine {
+		if err := output.Records(cmd.OutOrStdout(), []string{"field", nameA, nameB}, rows, opts); err != nil {
+			return err
+		}
+	}
+	summary := diffSummary
 	if len(rows) == 0 {
-		fmt.Fprintln(cmd.ErrOrStderr(), sameSummary)
-		return nil
+		summary = sameSummary
 	}
-	if err := output.Records(cmd.OutOrStdout(), []string{"field", nameA, nameB}, rows, opts); err != nil {
-		return err
-	}
-	fmt.Fprintln(cmd.ErrOrStderr(), diffSummary)
+	fmt.Fprintln(cmd.ErrOrStderr(), summary)
 	return nil
 }
 
