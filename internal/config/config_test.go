@@ -240,3 +240,28 @@ func TestResolvedMulti(t *testing.T) {
 		t.Fatal("Multi should be false with 1 profile")
 	}
 }
+
+// TestResolveEnvUsernameOnlyForBasic: GLM_USERNAME supplies who a PASSWORD
+// belongs to; a token-auth profile's identity is the token's — resolved and
+// stored by `glm profile login` — so an env claim must not override it
+// (Codex review, PR #25).
+func TestResolveEnvUsernameOnlyForBasic(t *testing.T) {
+	pointConfigAt(t)
+	write(t, &File{Profiles: map[string]Profile{
+		"b": {Instance: "https://x.service-now.com", Auth: AuthBasic, Username: "stored"},
+		"o": {Instance: "https://x.service-now.com", Auth: AuthOAuth, Username: "resolved"},
+		"c": {Instance: "https://x.service-now.com", Auth: AuthClientCredentials, Username: "resolved"},
+	}})
+	t.Setenv(EnvUsername, "override")
+
+	r, err := Resolve("b")
+	if err != nil || r.Profile.Username != "override" {
+		t.Errorf("basic profile must honor GLM_USERNAME, got %+v (%v)", r, err)
+	}
+	for _, name := range []string{"o", "c"} {
+		r, err := Resolve(name)
+		if err != nil || r.Profile.Username != "resolved" {
+			t.Errorf("token-auth profile %q must keep the resolved identity, got %+v (%v)", name, r, err)
+		}
+	}
+}

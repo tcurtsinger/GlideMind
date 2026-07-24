@@ -21,9 +21,10 @@ import (
 // fakeStore swaps the keyring-backed token/secret seams for in-memory maps —
 // cli tests must never touch the real OS keyring (standing harness rule).
 type fakeStore struct {
-	tokens  map[string]*oauth.Token
-	secrets map[string]string
-	saves   int
+	tokens          map[string]*oauth.Token
+	secrets         map[string]string
+	saves           int
+	passwordDeletes []string
 }
 
 func stubStore(t *testing.T) *fakeStore {
@@ -40,7 +41,7 @@ func stubStore(t *testing.T) *fakeStore {
 	deleteClientSecret = func(p string) error { delete(fs.secrets, p); return nil }
 	// The password delete too: `profile remove` reaches the real keyring
 	// otherwise, which does not exist on headless CI (Linux).
-	deletePassword = func(string) error { return nil }
+	deletePassword = func(p string) error { fs.passwordDeletes = append(fs.passwordDeletes, p); return nil }
 	t.Cleanup(func() {
 		loadStoredToken, saveStoredToken, deleteStoredToken = origLT, origST, origDT
 		loadClientSecret, saveClientSecret, deleteClientSecret = origLS, origSS, origDS
@@ -526,6 +527,78 @@ func TestUnresolvedTokenIdentityRendering(t *testing.T) {
 	}
 	if got := auditUser(res); got != "svc.glm" {
 		t.Errorf("audit user = %q", got)
+	}
+}
+
+func TestProfileAddPreservesResolvedUsername(t *testing.T) {
+	// Codex P2 (PR #25): an update that keeps the session (unchanged auth
+	// material) must keep the login-resolved username too — the empty
+	// --username default must not wipe it to unresolved. A material change
+	// clears it: the wiped session's identity no longer applies.
+	rec := newOAuthInstance(t)
+	fs := stubStore(t)
+	pointConfigAt(t)
+	writeConfig(t, &config.File{Profiles: map[string]config.Profile{
+		"o": {Instance: rec.srv.URL, Auth: config.AuthOAuth, ClientID: "cid", Username: "resolved.user"},
+	}})
+	fs.tokens["o"] = &oauth.Token{AccessToken: "at", RefreshToken: "rt", Expiry: time.Now().Add(time.Hour)}
+
+	if _, _, err := execRoot(t, "profile", "add", "o", "--instance", rec.srv.URL, "--auth", "oauth", "--client-id", "cid", "--redirect-port", "9999"); err != nil {
+		t.Fatalf("profile add: %v", err)
+	}
+	f, _ := config.Load()
+	if f.Profiles["o"].Username != "resolved.user" {
+		t.Errorf("unchanged material must keep the resolved username, got %q", f.Profiles["o"].Username)
+	}
+	if _, ok := fs.tokens["o"]; !ok {
+		t.Error("unchanged material must keep the session")
+	}
+
+	if _, _, err := execRoot(t, "profile", "add", "o", "--instance", rec.srv.URL, "--auth", "oauth", "--client-id", "other-cid"); err != nil {
+		t.Fatalf("profile add: %v", err)
+	}
+	f, _ = config.Load()
+	if f.Profiles["o"].Username != "" {
+		t.Errorf("changed material must clear the resolved username, got %q", f.Profiles["o"].Username)
+	}
+	if _, ok := fs.tokens["o"]; ok {
+		t.Error("changed material must invalidate the session")
+	}
+}
+
+func TestProfileAddRejectsUsernameForTokenAuth(t *testing.T) {
+	// Codex P2 (PR #25): a token-auth identity is resolved by login, never
+	// claimed via --username.
+	rec := newOAuthInstance(t)
+	stubStore(t)
+	pointConfigAt(t)
+	_, _, err := execRoot(t, "profile", "add", "o", "--instance", rec.srv.URL, "--auth", "oauth", "--client-id", "cid", "--username", "mallory")
+	if err == nil || !strings.Contains(err.Error(), "glm profile login") {
+		t.Fatalf("--username must be rejected for token auth, got %v", err)
+	}
+}
+
+func TestProfileAddLeavingBasicDeletesPassword(t *testing.T) {
+	// Codex P2 (PR #25): switching basic → oauth must not leave the old
+	// password in the keyring until `profile remove`.
+	rec := newOAuthInstance(t)
+	fs := stubStore(t)
+	pointConfigAt(t)
+	writeConfig(t, &config.File{Profiles: map[string]config.Profile{
+		"p": {Instance: rec.srv.URL, Auth: config.AuthBasic, Username: "u"},
+	}})
+
+	if _, _, err := execRoot(t, "profile", "add", "p", "--instance", rec.srv.URL, "--auth", "oauth", "--client-id", "cid"); err != nil {
+		t.Fatalf("profile add: %v", err)
+	}
+	found := false
+	for _, n := range fs.passwordDeletes {
+		if n == "p" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("leaving basic auth must delete the stored password, deletes: %v", fs.passwordDeletes)
 	}
 }
 

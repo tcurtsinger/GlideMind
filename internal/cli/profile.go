@@ -107,6 +107,12 @@ func newProfileAddCmd() *cobra.Command {
 			if method != config.AuthBasic && clientID == "" {
 				return fmt.Errorf("--client-id is required for --auth %s (from the instance's Application Registry entry)", auth)
 			}
+			if method != config.AuthBasic && username != "" {
+				// A token-auth identity is the token's, not a claim: it is
+				// resolved and stored by `profile login` (O10). Accepting a
+				// claimed name here could misattribute previews and audits.
+				return fmt.Errorf("--username does not apply to --auth %s — the identity is resolved and stored by `glm profile login %s`", auth, name)
+			}
 
 			// Secret material, gathered before any state changes. Basic
 			// needs a password; client-credentials always needs the client
@@ -129,6 +135,30 @@ func newProfileAddCmd() *cobra.Command {
 			}
 			old, existed := f.Profiles[name]
 			keepWritable := preserveWritable(old, existed, cmd.Flags().Changed("writable"), writable)
+			oldMethod := old.Auth
+			if oldMethod == "" {
+				oldMethod = config.AuthBasic
+			}
+			// An oauth profile re-added WITHOUT a secret is a declaration of
+			// the recommended public client, so any stored confidential
+			// secret must go (it would be sent in the PKCE exchange and
+			// break it); likewise when leaving client-credentials. Checked
+			// here, acted on after the save.
+			hadStaleSecret := false
+			if clientSecret == "" && method != config.AuthClientCredentials {
+				_, hadStaleSecret = loadClientSecret(name)
+			}
+			// materialChanged: the stored auth material no longer matches
+			// what any cached token — or resolved identity — was obtained
+			// under.
+			materialChanged := existed && (oldMethod != method || old.ClientID != clientID || old.Instance != base.String() || clientSecret != "" || hadStaleSecret)
+			if method != config.AuthBasic && existed && !materialChanged {
+				// A token-auth username is set ONLY by `profile login` (it
+				// resolves the real identity, O10). An update that keeps the
+				// stored session keeps the resolved identity with it — the
+				// empty --username default must not wipe it to unresolved.
+				username = old.Username
+			}
 			f.Profiles[name] = config.Profile{
 				Instance:     base.String(),
 				Auth:         method,
@@ -175,21 +205,6 @@ func newProfileAddCmd() *cobra.Command {
 					}
 				}
 			}
-			// Material the new profile shape obsoletes (Codex P2s, PR #25):
-			// an oauth profile re-added WITHOUT a secret is a declaration of
-			// the recommended public client, so any stored confidential
-			// secret must go (it would be sent in the PKCE exchange and
-			// break it); likewise for basic. Checked before the save, acted
-			// on after it.
-			hadStaleSecret := false
-			if clientSecret == "" && method != config.AuthClientCredentials {
-				_, hadStaleSecret = loadClientSecret(name)
-			}
-			oldMethod := old.Auth
-			if oldMethod == "" {
-				oldMethod = config.AuthBasic
-			}
-
 			if err := f.Save(); err != nil {
 				undo()
 				return err
@@ -206,8 +221,15 @@ func newProfileAddCmd() *cobra.Command {
 					stale = append(stale, err)
 				}
 			}
-			if existed && (oldMethod != method || old.ClientID != clientID || old.Instance != base.String() || clientSecret != "" || hadStaleSecret) {
+			if materialChanged {
 				if err := deleteStoredToken(name); err != nil {
+					stale = append(stale, err)
+				}
+			}
+			if existed && oldMethod == config.AuthBasic && method != config.AuthBasic {
+				// Leaving basic auth: the old password must not linger under
+				// the bare profile name until `profile remove`.
+				if err := deletePassword(name); err != nil {
 					stale = append(stale, err)
 				}
 			}

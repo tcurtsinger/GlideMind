@@ -221,8 +221,11 @@ func Resolve(flagName string) (*Resolved, error) {
 	}
 	// Credentials are env-overridable even for named profiles: the profile
 	// picks the instance, GLM_USERNAME/GLM_PASSWORD may supply who — the
-	// same rule the secret package applies to passwords.
-	if u := os.Getenv(EnvUsername); u != "" {
+	// same rule the secret package applies to passwords. BASIC auth only:
+	// a token-auth profile's identity is the token's, resolved and stored
+	// by `glm profile login` — GLM_USERNAME there is an unverified claim
+	// that could misattribute previews, audits, and the per-user cache.
+	if u := os.Getenv(EnvUsername); u != "" && (p.Auth == "" || p.Auth == AuthBasic) {
 		p.Username = u
 	}
 	return &Resolved{Name: name, Source: source, Profile: p, Multi: len(f.Profiles) >= 2}, nil
