@@ -192,7 +192,9 @@ func TestDiffRecordIdentical(t *testing.T) {
 }
 
 // TestDiffRecordMissingOneSide: a record present on one instance only is a diff
-// result, exit 0.
+// result (exit 0). A pipe consumer (default TSV) must still see the present
+// side's rows so a one-sided miss is distinguishable from identical; the
+// interactive table suppresses them in favour of the stderr line.
 func TestDiffRecordMissingOneSide(t *testing.T) {
 	rec := map[string]any{"sys_id": sysIDa, "state": "1"}
 	srvA := diffServer(t, "widget", diffFake{record: rec})
@@ -200,11 +202,17 @@ func TestDiffRecordMissingOneSide(t *testing.T) {
 	twoProfiles(t, srvA, srvB)
 
 	stdout, stderr := runGlm(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b")
-	if strings.TrimSpace(stdout) != "" {
-		t.Errorf("a one-sided miss prints no table: %q", stdout)
+	if !strings.Contains(stdout, "state") {
+		t.Errorf("default (piped) output must render the present side's rows: %q", stdout)
 	}
 	if !strings.Contains(stderr, "not found in b") || !strings.Contains(stderr, "present in a") {
 		t.Errorf("summary should name the side missing it: %q", stderr)
+	}
+
+	// The interactive table suppresses the rows — the summary is the answer.
+	stdout, _ = runGlm(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b", "--format", "table")
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("table format must suppress the one-sided rows: %q", stdout)
 	}
 }
 
@@ -476,12 +484,37 @@ func TestDiffSchemaTableMissingOneSide(t *testing.T) {
 	srvB := diffServer(t, "widget", diffFake{}) // table absent on B
 	twoProfiles(t, srvA, srvB)
 
+	// Default (piped) output renders the present side's fields as present-vs-
+	// absent so a pipe consumer can tell the table is one-sided, not identical.
 	stdout, stderr := runGlm(t, srvA, "", "diff", "widget", "-p", "a", "-p", "b")
-	if strings.TrimSpace(stdout) != "" {
-		t.Errorf("a one-sided missing table prints no table: %q", stdout)
+	if !strings.Contains(stdout, "state") {
+		t.Errorf("default (piped) output must render the present side's schema: %q", stdout)
 	}
 	if !strings.Contains(stderr, "not found in b") || !strings.Contains(stderr, "present in a") {
 		t.Errorf("summary should name the side missing the table: %q", stderr)
+	}
+
+	stdout, _ = runGlm(t, srvA, "", "diff", "widget", "-p", "a", "-p", "b", "--format", "table")
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("table format must suppress the one-sided rows: %q", stdout)
+	}
+}
+
+// TestDiffSchemaRefusesPartialDictionary: an ACL-filtered/partial dictionary
+// (no sys_id sentinel) can't back a trustworthy schema diff, so diff refuses
+// rather than risk a false "identical" (Codex review).
+func TestDiffSchemaRefusesPartialDictionary(t *testing.T) {
+	partial := []map[string]any{
+		{"name": "widget", "element": "name", "internal_type": "string", "display": "true"},
+		{"name": "widget", "element": "state", "internal_type": "integer"},
+	}
+	srvA := diffServer(t, "widget", diffFake{dict: partial}) // no sys_id row
+	srvB := diffServer(t, "widget", diffFake{dict: widgetDict("integer", "extra", "sys_user")})
+	twoProfiles(t, srvA, srvB)
+
+	_, _, err := runGlmErr(t, srvA, "", "diff", "widget", "-p", "a", "-p", "b")
+	if err == nil || !strings.Contains(err.Error(), "sys_id") || !strings.Contains(err.Error(), "a:") {
+		t.Fatalf("a partial dictionary must refuse the schema diff, naming the profile: %v", err)
 	}
 }
 

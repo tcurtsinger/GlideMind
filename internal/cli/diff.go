@@ -199,6 +199,23 @@ func diffSchema(cmd *cobra.Command, clientA, clientB *snow.Client, nameA, nameB,
 	if missA && missB {
 		return &schema.NotFoundError{Table: table} // exit 5
 	}
+	// A schema diff is only trustworthy on a COMPLETE dictionary. A ServiceNow
+	// dictionary always carries the sys_id row; its absence means the metadata
+	// is ACL-filtered/partial (a least-privilege profile that sees the table
+	// but not every sys_dictionary row), and comparing partial field maps could
+	// report a false "identical" or spurious "only on one side". Refuse rather
+	// than make a claim glm cannot stand behind. (Only present dictionaries are
+	// checked; a table absent on one side is the one-sided case below.)
+	if !missA {
+		if err := requireCompleteDict(nameA, table, metaA); err != nil {
+			return err
+		}
+	}
+	if !missB {
+		if err := requireCompleteDict(nameB, table, metaB); err != nil {
+			return err
+		}
+	}
 	// A table absent on one side is compared against an empty schema, so every
 	// field the other side has shows as present-vs-absent (fieldDesc "—"). Same
 	// contract as the record path: humans get the not-found line, machine
@@ -239,16 +256,27 @@ func diffSchema(cmd *cobra.Command, clientA, clientB *snow.Client, nameA, nameB,
 }
 
 // renderDiff prints diff rows (field, A, B) to stdout and a summary to stderr.
-// Machine formats (json/jsonl) always render, so a consumer gets valid output
-// in every case (json emits `[]` for an identical diff, or the rows — never
-// empty stdout that fails to parse), the same way query renders zero-row
-// results. Human formats print a table only for a genuine field-level diff;
-// when identical, or when the record/table is missing on one side, the stderr
-// summary is the whole answer (a one-sided miss is reported as a line, per I5)
-// and a table would be noise. oneSided is empty unless a side is missing.
+// Only the interactive `table` format suppresses stdout for an identical or
+// one-sided result — there the stderr summary is the human answer (a one-sided
+// miss is reported as a line, per I5) and a table would be noise. Every other
+// format is machine-consumable (json/jsonl, and csv/tsv piped to a script), so
+// it always renders a parseable result: `[]`/empty for identical, the
+// present-vs-absent rows for a one-sided miss — a pipe consumer must never
+// mistake "missing on one side" for "identical". A genuine field diff renders
+// in every format. oneSided is empty unless a side is missing.
 func renderDiff(cmd *cobra.Command, rows []map[string]any, nameA, nameB string, opts output.Options, oneSided, diffSummary, sameSummary string) error {
-	machine := opts.Format == "json" || opts.Format == "jsonl"
-	if machine || (len(rows) > 0 && oneSided == "") {
+	var render bool
+	switch {
+	case len(rows) == 0:
+		// Identical: json/jsonl emit the empty structure; delimited/table stay
+		// empty (their emptiness already means "no differences").
+		render = opts.Format == "json" || opts.Format == "jsonl"
+	case oneSided == "":
+		render = true // a genuine field diff — every format
+	default:
+		render = opts.Format != "table" // one-sided: render rows everywhere but the human table
+	}
+	if render {
 		if err := output.Records(cmd.OutOrStdout(), []string{"field", nameA, nameB}, rows, opts); err != nil {
 			return err
 		}
@@ -350,6 +378,17 @@ func firstUnknownField(metas []*schema.TableMeta, fields []string) error {
 		if !known {
 			return reject
 		}
+	}
+	return nil
+}
+
+// requireCompleteDict rejects a schema diff built on an untrustworthy
+// dictionary. A complete ServiceNow dictionary always carries the sys_id row;
+// its absence means the metadata is ACL-filtered/partial, so a comparison
+// would be a claim glm cannot stand behind.
+func requireCompleteDict(name, table string, meta *schema.TableMeta) error {
+	if _, ok := meta.Fields["sys_id"]; !ok {
+		return fmt.Errorf("%s: the %q dictionary looks ACL-filtered or partial (no sys_id) — cannot make a trustworthy schema diff; the profile may lack full sys_dictionary read access", name, table)
 	}
 	return nil
 }
