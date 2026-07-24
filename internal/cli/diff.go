@@ -99,25 +99,26 @@ func diffRecord(cmd *cobra.Command, clientA, clientB *snow.Client, nameA, nameB,
 	recA, errA := newRecordFetcher(clientA, schemaStore(clientA), table, baseQuery)(ctx, key)
 	recB, errB := newRecordFetcher(clientB, schemaStore(clientB), table, baseQuery)(ctx, key)
 
-	missA, err := classifyRecordErr(nameA, errA)
-	if err != nil {
-		return err
+	missA, ferr := classifyRecordErr(nameA, errA)
+	if ferr != nil {
+		return ferr
 	}
-	missB, err := classifyRecordErr(nameB, errB)
-	if err != nil {
-		return err
+	missB, ferr := classifyRecordErr(nameB, errB)
+	if ferr != nil {
+		return ferr
 	}
-
-	errOut := cmd.ErrOrStderr()
-	switch {
-	case missA && missB:
+	if missA && missB {
 		return &notFoundError{table: table, key: key} // exit 5
-	case missA:
-		fmt.Fprintf(errOut, "record %q not found in %s (present in %s)\n", key, nameA, nameB)
-		return nil
-	case missB:
-		fmt.Fprintf(errOut, "record %q not found in %s (present in %s)\n", key, nameB, nameA)
-		return nil
+	}
+	// A record missing on one side is compared against an empty record: every
+	// field the other side has "differs" (present vs absent). Humans get the
+	// concise not-found line; machine output still gets those rows, so
+	// --format json stays valid and informative instead of empty stdout.
+	if missA {
+		recA = snow.Record{}
+	}
+	if missB {
+		recB = snow.Record{}
 	}
 
 	var names []string
@@ -149,6 +150,7 @@ func diffRecord(cmd *cobra.Command, clientA, clientB *snow.Client, nameA, nameB,
 		}
 	}
 	return renderDiff(cmd, rows, nameA, nameB, opts,
+		oneSidedMsg(missA, missB, nameA, nameB, fmt.Sprintf("record %q", key)),
 		fmt.Sprintf("%d differing field(s) for %s/%s between %s and %s", len(rows), table, key, nameA, nameB),
 		fmt.Sprintf("%s/%s is identical between %s and %s", table, key, nameA, nameB))
 }
@@ -160,25 +162,27 @@ func diffSchema(cmd *cobra.Command, clientA, clientB *snow.Client, nameA, nameB,
 	metaA, errA := schemaStore(clientA).Get(ctx, table)
 	metaB, errB := schemaStore(clientB).Get(ctx, table)
 
-	missA, err := classifyTableErr(nameA, errA)
-	if err != nil {
-		return err
+	missA, ferr := classifyTableErr(nameA, errA)
+	if ferr != nil {
+		return ferr
 	}
-	missB, err := classifyTableErr(nameB, errB)
-	if err != nil {
-		return err
+	missB, ferr := classifyTableErr(nameB, errB)
+	if ferr != nil {
+		return ferr
 	}
-
-	errOut := cmd.ErrOrStderr()
-	switch {
-	case missA && missB:
+	if missA && missB {
 		return &schema.NotFoundError{Table: table} // exit 5
-	case missA:
-		fmt.Fprintf(errOut, "table %q not found in %s (present in %s)\n", table, nameA, nameB)
-		return nil
-	case missB:
-		fmt.Fprintf(errOut, "table %q not found in %s (present in %s)\n", table, nameB, nameA)
-		return nil
+	}
+	// A table absent on one side is compared against an empty schema, so every
+	// field the other side has shows as present-vs-absent (fieldDesc "—"). Same
+	// contract as the record path: humans get the not-found line, machine
+	// output stays a valid array.
+	empty := &schema.TableMeta{Fields: map[string]schema.Field{}}
+	if missA {
+		metaA = empty
+	}
+	if missB {
+		metaB = empty
 	}
 
 	set := map[string]bool{}
@@ -203,29 +207,48 @@ func diffSchema(cmd *cobra.Command, clientA, clientB *snow.Client, nameA, nameB,
 		}
 	}
 	return renderDiff(cmd, rows, nameA, nameB, opts,
+		oneSidedMsg(missA, missB, nameA, nameB, fmt.Sprintf("table %q", table)),
 		fmt.Sprintf("%d schema difference(s) for %s between %s and %s", len(rows), table, nameA, nameB),
 		fmt.Sprintf("%s schema is identical between %s and %s", table, nameA, nameB))
 }
 
 // renderDiff prints diff rows (field, A, B) to stdout and a summary to stderr.
-// Machine formats (json/jsonl) always render, even with zero rows, so a
-// consumer gets valid output (json emits `[]`, not empty stdout that fails to
-// parse) — the same way query renders zero-row results. Human formats print a
-// table only when something differs; when identical the stderr summary is the
-// whole answer and a bare header would be noise.
-func renderDiff(cmd *cobra.Command, rows []map[string]any, nameA, nameB string, opts output.Options, diffSummary, sameSummary string) error {
+// Machine formats (json/jsonl) always render, so a consumer gets valid output
+// in every case (json emits `[]` for an identical diff, or the rows — never
+// empty stdout that fails to parse), the same way query renders zero-row
+// results. Human formats print a table only for a genuine field-level diff;
+// when identical, or when the record/table is missing on one side, the stderr
+// summary is the whole answer (a one-sided miss is reported as a line, per I5)
+// and a table would be noise. oneSided is empty unless a side is missing.
+func renderDiff(cmd *cobra.Command, rows []map[string]any, nameA, nameB string, opts output.Options, oneSided, diffSummary, sameSummary string) error {
 	machine := opts.Format == "json" || opts.Format == "jsonl"
-	if len(rows) > 0 || machine {
+	if machine || (len(rows) > 0 && oneSided == "") {
 		if err := output.Records(cmd.OutOrStdout(), []string{"field", nameA, nameB}, rows, opts); err != nil {
 			return err
 		}
 	}
-	summary := diffSummary
-	if len(rows) == 0 {
-		summary = sameSummary
+	summary := sameSummary
+	switch {
+	case oneSided != "":
+		summary = oneSided
+	case len(rows) > 0:
+		summary = diffSummary
 	}
 	fmt.Fprintln(cmd.ErrOrStderr(), summary)
 	return nil
+}
+
+// oneSidedMsg renders the "present on one instance only" result line (per I5),
+// or "" when the subject exists on both sides. subject is e.g. `record "INC1"`
+// or `table "incident"`.
+func oneSidedMsg(missA, missB bool, nameA, nameB, subject string) string {
+	switch {
+	case missA:
+		return fmt.Sprintf("%s not found in %s (present in %s)", subject, nameA, nameB)
+	case missB:
+		return fmt.Sprintf("%s not found in %s (present in %s)", subject, nameB, nameA)
+	}
+	return ""
 }
 
 // fieldDesc renders a field's schema shape for comparison: "—" when absent,
@@ -243,13 +266,21 @@ func fieldDesc(meta *schema.TableMeta, name string) string {
 
 // classifyRecordErr splits a per-instance fetch error into "record missing on
 // this side" (a diff result, not an error) versus a real failure to surface.
-// A missing record is a 0-row lookup (number/display key) or a 404 (sys_id).
+// A record is missing when the lookup returns 0 rows (number/display key), the
+// sys_id fetch 404s, OR — for a number/display key — the table itself is
+// absent on this instance (schema.NotFoundError from the resolver's schema
+// fetch): if the whole table is gone, the record is gone too, which is still a
+// one-sided miss, not a fatal error.
 func classifyRecordErr(name string, err error) (missing bool, fatal error) {
 	if err == nil {
 		return false, nil
 	}
 	var nf *notFoundError
 	if errors.As(err, &nf) {
+		return true, nil
+	}
+	var snf *schema.NotFoundError
+	if errors.As(err, &snf) {
 		return true, nil
 	}
 	var ae *snow.APIError

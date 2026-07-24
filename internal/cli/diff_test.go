@@ -225,6 +225,55 @@ func TestDiffJSONRendersRows(t *testing.T) {
 	}
 }
 
+// TestDiffOneSidedJSONIsValid: a record present on one side only must still
+// produce valid, informative JSON (the present side's fields vs empty), not
+// empty stdout (Codex review) — the same contract as the identical case.
+func TestDiffOneSidedJSONIsValid(t *testing.T) {
+	recA := map[string]any{"sys_id": sysIDa, "state": "1", "short_description": "Alpha"}
+	srvA := diffServer(t, "widget", diffFake{record: recA})
+	srvB := diffServer(t, "widget", diffFake{record: nil}) // 404 on B
+	twoProfiles(t, srvA, srvB)
+
+	stdout, stderr := runGlm(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b", "--format", "json")
+	var rows []map[string]string
+	if err := json.Unmarshal([]byte(stdout), &rows); err != nil {
+		t.Fatalf("one-sided diff --format json must be valid JSON, got %q: %v", stdout, err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected the present side's fields as rows, got %v", rows)
+	}
+	for _, r := range rows {
+		if r["a"] == "" || r["b"] != "" {
+			t.Errorf("present side should have a value, absent side empty: %v", r)
+		}
+	}
+	if !strings.Contains(stderr, "not found in b") {
+		t.Errorf("stderr should still name the missing side: %q", stderr)
+	}
+}
+
+// TestDiffRecordNumberKeyTableMissingOneSide: with a number key, a table that
+// exists on only one instance is a one-sided miss (exit 0), not a fatal
+// not-found — the resolver's schema fetch 404s on the absent side (Codex
+// review).
+func TestDiffRecordNumberKeyTableMissingOneSide(t *testing.T) {
+	dictA := []map[string]any{
+		{"name": "widget", "element": "sys_id", "internal_type": "GUID"},
+		{"name": "widget", "element": "number", "internal_type": "string", "display": "true"},
+		{"name": "widget", "element": "state", "internal_type": "integer"},
+	}
+	recA := map[string]any{"sys_id": sysIDa, "number": "WID0001", "state": "1"}
+	srvA := diffServer(t, "widget", diffFake{dict: dictA, record: recA})
+	srvB := diffServer(t, "widget", diffFake{}) // table absent on B
+	twoProfiles(t, srvA, srvB)
+
+	// runGlm fails the test on a non-zero exit, so this asserts exit 0.
+	_, stderr := runGlm(t, srvA, "", "diff", "widget", "WID0001", "-p", "a", "-p", "b")
+	if !strings.Contains(stderr, "not found in b") || !strings.Contains(stderr, "present in a") {
+		t.Errorf("a table absent on one side must be a one-sided miss, got: %q", stderr)
+	}
+}
+
 func widgetDict(stateType, only, ownerRef string) []map[string]any {
 	return []map[string]any{
 		{"name": "widget", "element": "sys_id", "internal_type": "GUID"},
