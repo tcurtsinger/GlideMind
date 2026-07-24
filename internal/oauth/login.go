@@ -75,7 +75,7 @@ func Login(ctx context.Context, cfg Config) (*Token, error) {
 	}
 
 	port := cfg.redirectPort()
-	ln, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
+	listeners, err := listenLoopback(port)
 	if err != nil {
 		return nil, &ConfigError{Msg: fmt.Sprintf("cannot listen on localhost:%d for the OAuth callback (%v) — free the port or set redirect_port on the profile (the instance's registry entry must list the same port)", port, err)}
 	}
@@ -127,7 +127,9 @@ func Login(ctx context.Context, cfg Config) (*Token, error) {
 			fmt.Fprint(w, donePage) //nolint:errcheck
 		}
 	})}
-	go srv.Serve(ln) //nolint:errcheck
+	for _, ln := range listeners {
+		go srv.Serve(ln) //nolint:errcheck
+	}
 	// Graceful shutdown, not Close: the handler queues its result before
 	// net/http finishes writing the response, so an abrupt Close can sever
 	// the connection mid-page and the browser shows a reset instead of the
@@ -168,6 +170,33 @@ func Login(ctx context.Context, cfg Config) (*Token, error) {
 	case <-ctx.Done():
 		return nil, &AuthError{Msg: "login canceled"}
 	}
+}
+
+// listenLoopback binds the callback port on both loopback families (O4).
+// Go resolves "localhost" to a single address for Listen, but the user's
+// browser resolves it per OS policy and may deliver the callback over the
+// other family — where a different process could already be listening,
+// silently receiving the authorization code or hanging the login. Binding
+// both closes that gap. IPv6 is skipped only when the host has no usable
+// IPv6 loopback at all (probed via [::1]:0), so an in-use [::1]:port is
+// still a hard port conflict, never a silent misdelivery.
+func listenLoopback(port int) ([]net.Listener, error) {
+	ln4, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return nil, err
+	}
+	ln6, err := net.Listen("tcp6", fmt.Sprintf("[::1]:%d", port))
+	if err != nil {
+		if probe, perr := net.Listen("tcp6", "[::1]:0"); perr == nil {
+			// IPv6 loopback works in general, so this port specifically is
+			// taken on the family the browser might use.
+			probe.Close()
+			ln4.Close()
+			return nil, err
+		}
+		return []net.Listener{ln4}, nil
+	}
+	return []net.Listener{ln4, ln6}, nil
 }
 
 func joinNonEmpty(a, b string) string {

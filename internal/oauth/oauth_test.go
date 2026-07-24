@@ -283,6 +283,48 @@ func TestLoginPortInUse(t *testing.T) {
 	}
 }
 
+func TestLoginPortInUseIPv6(t *testing.T) {
+	// Codex P2 (PR #24): the browser may resolve localhost to ::1, so a
+	// port owned by another process on the IPv6 loopback is a hard
+	// conflict — never a silent misdelivery of the authorization code.
+	port := freePort(t)
+	ln6, err := net.Listen("tcp6", fmt.Sprintf("[::1]:%d", port))
+	if err != nil {
+		t.Skip("no usable IPv6 loopback on this host")
+	}
+	defer ln6.Close()
+	cfg := Config{Endpoints: Endpoints{AuthURL: "https://x/a", TokenURL: "https://x/t"}, ClientID: "cid", RedirectPort: port}
+	_, err = Login(context.Background(), cfg)
+	var cfgErr *ConfigError
+	if !errors.As(err, &cfgErr) || !strings.Contains(err.Error(), "redirect_port") {
+		t.Fatalf("want ConfigError for an IPv6-occupied port, got %v", err)
+	}
+}
+
+func TestLoginCallbackOverIPv6(t *testing.T) {
+	if ln, err := net.Listen("tcp6", "[::1]:0"); err != nil {
+		t.Skip("no usable IPv6 loopback on this host")
+	} else {
+		ln.Close()
+	}
+	h := newLoginHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"at6","expires_in":1800}`) //nolint:errcheck
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := Login(context.Background(), h.cfg)
+		done <- err
+	}()
+	q, _ := h.browse(t)
+	// The browser resolved localhost to ::1: the callback must still land.
+	v6URI := fmt.Sprintf("http://[::1]:%d/callback", h.cfg.RedirectPort)
+	callback(t, v6URI, url.Values{"code": {"c6"}, "state": {q.Get("state")}})
+	if err := <-done; err != nil {
+		t.Fatalf("callback over IPv6 loopback must complete the login: %v", err)
+	}
+}
+
 func TestLoginRequiresClientID(t *testing.T) {
 	_, err := Login(context.Background(), Config{Endpoints: Endpoints{AuthURL: "https://x/a", TokenURL: "https://x/t"}})
 	var cfgErr *ConfigError
