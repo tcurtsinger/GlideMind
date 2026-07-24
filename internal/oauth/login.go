@@ -128,7 +128,15 @@ func Login(ctx context.Context, cfg Config) (*Token, error) {
 		}
 	})}
 	go srv.Serve(ln) //nolint:errcheck
-	defer srv.Close()
+	// Graceful shutdown, not Close: the handler queues its result before
+	// net/http finishes writing the response, so an abrupt Close can sever
+	// the connection mid-page and the browser shows a reset instead of the
+	// success/failure page. Shutdown lets the in-flight response complete.
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(sctx)
+	}()
 
 	cfg.notify("Open this URL to authorize glm (a browser window should open):\n  " + authURL)
 	opener := cfg.OpenBrowser
