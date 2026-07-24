@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tcurtsinger/GlideMind/internal/config"
@@ -16,6 +17,10 @@ import (
 type diffFake struct {
 	dict   []map[string]any // sys_dictionary rows; empty => table absent
 	record map[string]any   // the record; nil => record absent
+	// dictNext, when set, is served from the 2nd dictionary fetch onward —
+	// simulating a live schema change after a cache was warmed, so tests can
+	// exercise refetch/self-heal.
+	dictNext []map[string]any
 }
 
 func snResult(w http.ResponseWriter, v any) {
@@ -28,16 +33,27 @@ func snResult(w http.ResponseWriter, v any) {
 // by sys_id or number.
 func diffServer(t *testing.T, table string, f diffFake) *httptest.Server {
 	t.Helper()
+	hasTable := len(f.dict) > 0 || len(f.dictNext) > 0
+	var mu sync.Mutex
+	dictHits := 0
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/now/table/sys_db_object", func(w http.ResponseWriter, r *http.Request) {
-		if len(f.dict) > 0 && strings.Contains(r.URL.Query().Get("sysparm_query"), "name="+table) {
+		if hasTable && strings.Contains(r.URL.Query().Get("sysparm_query"), "name="+table) {
 			snResult(w, []map[string]any{{"name": table, "super_class.name": ""}})
 			return
 		}
 		snResult(w, []map[string]any{})
 	})
 	mux.HandleFunc("/api/now/table/sys_dictionary", func(w http.ResponseWriter, r *http.Request) {
-		snResult(w, f.dict)
+		mu.Lock()
+		dictHits++
+		n := dictHits
+		mu.Unlock()
+		rows := f.dict
+		if n >= 2 && f.dictNext != nil {
+			rows = f.dictNext
+		}
+		snResult(w, rows)
 	})
 	mux.HandleFunc("/api/now/table/"+table+"/", func(w http.ResponseWriter, r *http.Request) {
 		if f.record == nil {
@@ -334,6 +350,57 @@ func TestDiffSchemaReferenceTypeMismatch(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "1 schema difference(s)") {
 		t.Errorf("the type mismatch must be counted: %q", stderr)
+	}
+}
+
+// TestDiffSchemaRefetchesLiveDictionary: a schema diff must reflect the live
+// dictionaries, not cache within the TTL (Codex review) — a column added since
+// a cache warmed must not let diff keep reporting a stale difference. Server A
+// gains "extra" from its 2nd dictionary fetch; B always has it. The first diff
+// (A's fetch #1, no extra) reports the difference; the second diff refetches
+// (A's fetch #2, extra present) and reports identical.
+func TestDiffSchemaRefetchesLiveDictionary(t *testing.T) {
+	base := []map[string]any{
+		{"name": "widget", "element": "sys_id", "internal_type": "GUID"},
+		{"name": "widget", "element": "name", "internal_type": "string", "display": "true"},
+	}
+	withExtra := append(append([]map[string]any{}, base...),
+		map[string]any{"name": "widget", "element": "extra", "internal_type": "string"})
+	srvA := diffServer(t, "widget", diffFake{dict: base, dictNext: withExtra})
+	srvB := diffServer(t, "widget", diffFake{dict: withExtra})
+	twoProfiles(t, srvA, srvB)
+
+	_, stderr := runGlm(t, srvA, "", "diff", "widget", "-p", "a", "-p", "b")
+	if !strings.Contains(stderr, "1 schema difference(s)") {
+		t.Fatalf("first diff should see A's stale dictionary lacking extra: %q", stderr)
+	}
+	_, stderr = runGlm(t, srvA, "", "diff", "widget", "-p", "a", "-p", "b")
+	if !strings.Contains(stderr, "schema is identical") {
+		t.Errorf("second diff must refetch and see A's live dictionary (with extra): %q", stderr)
+	}
+}
+
+// TestDiffFieldsSelfHeal: a --fields name created after the caches warmed must
+// not be falsely rejected (Codex review) — validation self-heals with a
+// refetch before concluding the field is unknown everywhere. "tier" is absent
+// from the first dictionary fetch and present from the second.
+func TestDiffFieldsSelfHeal(t *testing.T) {
+	base := []map[string]any{
+		{"name": "widget", "element": "sys_id", "internal_type": "GUID"},
+		{"name": "widget", "element": "name", "internal_type": "string", "display": "true"},
+	}
+	withTier := append(append([]map[string]any{}, base...),
+		map[string]any{"name": "widget", "element": "tier", "internal_type": "integer"})
+	recA := map[string]any{"sys_id": sysIDa, "tier": "1"}
+	recB := map[string]any{"sys_id": sysIDa, "tier": "2"}
+	srvA := diffServer(t, "widget", diffFake{dict: base, dictNext: withTier, record: recA})
+	srvB := diffServer(t, "widget", diffFake{dict: base, dictNext: withTier, record: recB})
+	twoProfiles(t, srvA, srvB)
+
+	// runGlm fails on a non-zero exit, so this asserts the field was accepted.
+	stdout, _ := runGlm(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b", "--fields", "tier")
+	if !strings.Contains(stdout, "tier") || !strings.Contains(stdout, "1") || !strings.Contains(stdout, "2") {
+		t.Errorf("a field added after the caches warmed must be accepted and compared: %q", stdout)
 	}
 }
 

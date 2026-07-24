@@ -171,8 +171,13 @@ func diffRecord(cmd *cobra.Command, clientA, clientB *snow.Client, nameA, nameB,
 // present on one side only, and type/reference mismatches.
 func diffSchema(cmd *cobra.Command, clientA, clientB *snow.Client, nameA, nameB, table string, opts output.Options) error {
 	ctx := cmd.Context()
-	metaA, errA := schemaStore(clientA).Get(ctx, table)
-	metaB, errB := schemaStore(clientB).Get(ctx, table)
+	// A schema diff is a direct truth claim about the live dictionaries, so it
+	// fetches them fresh (Refetch) rather than trusting cache within the 7-day
+	// TTL — a column added or dropped after a cache warmed must not let diff
+	// report "identical". Records are already fetched live; this keeps both
+	// sides of what diff compares equally current.
+	metaA, errA := schemaStore(clientA).Refetch(ctx, table)
+	metaB, errB := schemaStore(clientB).Refetch(ctx, table)
 
 	missA, ferr := classifyTableErr(nameA, errA)
 	if ferr != nil {
@@ -271,23 +276,57 @@ func oneSidedMsg(missA, missB bool, nameA, nameB, subject string) string {
 // TableMeta.Validate stays lenient (an ACL-filtered/partial dictionary can't
 // prove a field wrong). A table absent on one instance contributes no schema;
 // if neither has it, the diff itself reports the miss, so validation is
-// skipped.
+// skipped. On a validation miss it self-heals like validateFields: a field
+// created after the caches warmed is refetched once and re-checked before
+// being rejected, so a valid new field is never blocked by a stale cache.
 func validateDiffFields(ctx context.Context, storeA, storeB *schema.Store, table string, fields []string) error {
+	metas, err := diffMetas(ctx, storeA, storeB, table, false)
+	if err != nil {
+		return err
+	}
+	if len(metas) == 0 || firstUnknownField(metas, fields) == nil {
+		return nil
+	}
+	// Something looks unknown on every cached dictionary — it may have been
+	// created after the caches warmed. Refetch live and re-check; only reject
+	// if it is still unknown everywhere. A refetch that fails to settle it
+	// leaves the field unblocked (a false "unknown field" is worse than a
+	// missed typo — the same call reads chooses).
+	fresh, ferr := diffMetas(ctx, storeA, storeB, table, true)
+	if ferr != nil || len(fresh) == 0 {
+		return nil
+	}
+	return firstUnknownField(fresh, fields)
+}
+
+// diffMetas loads the table's schema from both stores, cached (refresh=false)
+// or live (refresh=true), skipping an instance where the table is absent.
+func diffMetas(ctx context.Context, storeA, storeB *schema.Store, table string, refresh bool) ([]*schema.TableMeta, error) {
 	var metas []*schema.TableMeta
 	for _, s := range []*schema.Store{storeA, storeB} {
-		m, err := s.Get(ctx, table)
+		var m *schema.TableMeta
+		var err error
+		if refresh {
+			m, err = s.Refetch(ctx, table)
+		} else {
+			m, err = s.Get(ctx, table)
+		}
 		if err != nil {
 			var nf *schema.NotFoundError
 			if errors.As(err, &nf) {
 				continue // table absent here; the other side (or the diff) handles it
 			}
-			return err
+			return nil, err
 		}
 		metas = append(metas, m)
 	}
-	if len(metas) == 0 {
-		return nil
-	}
+	return metas, nil
+}
+
+// firstUnknownField returns the validation error for the first field provably
+// unknown on EVERY meta (the union check), or nil when each field is known on
+// at least one instance (or no dictionary can prove it wrong).
+func firstUnknownField(metas []*schema.TableMeta, fields []string) error {
 	for _, f := range fields {
 		known := false
 		var reject error
