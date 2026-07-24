@@ -334,6 +334,30 @@ func TestRefreshRejected(t *testing.T) {
 	}
 }
 
+func TestTokenRequestRefusesRedirect(t *testing.T) {
+	// Codex P2 (PR #24): a redirected token request must never replay the
+	// form — code, refresh token, possibly a client secret — to the
+	// redirect target. The 3xx surfaces as a rejected token request.
+	leaked := 0
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked++
+	}))
+	t.Cleanup(attacker.Close)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, attacker.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := Config{Endpoints: Endpoints{TokenURL: srv.URL}, ClientID: "cid", ClientSecret: "shh"}
+	_, err := Refresh(context.Background(), cfg, "rt")
+	var authErr *AuthError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("redirected token request must be rejected, got %v", err)
+	}
+	if leaked != 0 {
+		t.Errorf("token form was replayed to the redirect target %d time(s)", leaked)
+	}
+}
+
 func TestClientCredentials(t *testing.T) {
 	var form url.Values
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

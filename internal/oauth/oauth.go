@@ -86,10 +86,20 @@ func (c Config) timeout() time.Duration {
 }
 
 func (c Config) httpClient() *http.Client {
+	// An injected client (tests) owns its own redirect policy.
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	return &http.Client{Timeout: 30 * time.Second, CheckRedirect: refuseRedirect}
+}
+
+// refuseRedirect stops the token client from following any redirect: a
+// token endpoint has no legitimate reason to redirect, and following a
+// 307/308 would replay the form — authorization code, refresh token,
+// possibly a client secret — to wherever it points (the same rule snow's
+// transport applies to writes). The 3xx surfaces as a rejected request.
+func refuseRedirect(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 func (c Config) notify(msg string) {
