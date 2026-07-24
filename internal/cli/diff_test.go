@@ -294,6 +294,25 @@ func TestDiffOneSidedJSONIsValid(t *testing.T) {
 	}
 }
 
+// TestDiffOneSidedBlankFieldStillRenders: a one-sided miss must stay
+// distinguishable from identical even when the requested field is blank on the
+// present side (Codex review) — the difference is present-on-a vs absent-on-b,
+// so a row is emitted regardless of value.
+func TestDiffOneSidedBlankFieldStillRenders(t *testing.T) {
+	recA := map[string]any{"sys_id": sysIDa, "u_optional": ""}
+	srvA := diffServer(t, "widget", diffFake{record: recA})
+	srvB := diffServer(t, "widget", diffFake{record: nil}) // absent on b
+	twoProfiles(t, srvA, srvB)
+
+	stdout, stderr := runGlm(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b", "--fields", "u_optional")
+	if !strings.Contains(stdout, "u_optional") {
+		t.Errorf("a one-sided miss must render the field even when blank on the present side: %q", stdout)
+	}
+	if !strings.Contains(stderr, "not found in b") {
+		t.Errorf("summary should still name the missing side: %q", stderr)
+	}
+}
+
 // TestDiffRecordNumberKeyTableMissingOneSide: with a number key, a table that
 // exists on only one instance is a one-sided miss (exit 0), not a fatal
 // not-found — the resolver's schema fetch 404s on the absent side (Codex

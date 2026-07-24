@@ -163,10 +163,16 @@ func diffRecord(cmd *cobra.Command, clientA, clientB *snow.Client, nameA, nameB,
 		sort.Strings(names)
 	}
 
+	// When one side is missing, every compared field is emitted regardless of
+	// value — the difference is present-on-one-instance vs absent, so a field
+	// that happens to be blank on the present side (e.g. `--fields u_optional`)
+	// must still produce a row. Otherwise the one-sided diff could collapse to
+	// zero rows and read as identical to a pipe consumer.
+	oneSided := missA || missB
 	var rows []map[string]any
 	for _, f := range names {
 		a, b := output.Value(recA, f), output.Value(recB, f)
-		if a != b {
+		if a != b || oneSided {
 			rows = append(rows, map[string]any{"field": f, nameA: a, nameB: b})
 		}
 	}
