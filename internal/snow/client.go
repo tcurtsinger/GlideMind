@@ -71,6 +71,31 @@ func (a bearerAuth) apply(req *http.Request) error {
 
 func (a bearerAuth) retryAuth(context.Context) bool { return false }
 
+// TokenSource supplies and renews a bearer token — the seam the OAuth
+// grants plug into (DESIGN-OAUTH.md O6/O7). Token returns a currently
+// usable access token, minting or refreshing as needed; an error means the
+// credential is unobtainable (e.g. an expired session needing an
+// interactive login). Renew is consulted once per call after an HTTP 401:
+// return true only when a genuinely new credential was obtained.
+// Implementations must be safe for concurrent use.
+type TokenSource interface {
+	Token(ctx context.Context) (string, error)
+	Renew(ctx context.Context) bool
+}
+
+type sourceAuth struct{ src TokenSource }
+
+func (a sourceAuth) apply(req *http.Request) error {
+	tok, err := a.src.Token(req.Context())
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	return nil
+}
+
+func (a sourceAuth) retryAuth(ctx context.Context) bool { return a.src.Renew(ctx) }
+
 // NormalizeInstance turns "acme", "acme.service-now.com", or a full URL into
 // a base URL.
 func NormalizeInstance(s string) (*url.URL, error) {
@@ -169,6 +194,32 @@ func NewBearer(instance, token, username string, timeout time.Duration) (*Client
 		hc:       &http.Client{Timeout: timeout, CheckRedirect: secureRedirect},
 		username: username,
 		auth:     bearerAuth{token: token},
+	}, nil
+}
+
+// NewTokenAuth builds a client whose bearer token comes from a renewable
+// TokenSource — the OAuth PKCE and client-credentials constructors
+// (DESIGN-OAUTH.md O7). username names the identity for the per-user
+// schema cache; never "".
+func NewTokenAuth(instance string, src TokenSource, username string, timeout time.Duration) (*Client, error) {
+	u, err := NormalizeInstance(instance)
+	if err != nil {
+		return nil, err
+	}
+	if src == nil {
+		return nil, fmt.Errorf("token source is nil")
+	}
+	if username == "" {
+		return nil, fmt.Errorf("username is empty — token clients must name an identity for the per-user cache")
+	}
+	if timeout <= 0 {
+		return nil, fmt.Errorf("timeout must be positive, got %s", timeout)
+	}
+	return &Client{
+		base:     u,
+		hc:       &http.Client{Timeout: timeout, CheckRedirect: secureRedirect},
+		username: username,
+		auth:     sourceAuth{src: src},
 	}, nil
 }
 

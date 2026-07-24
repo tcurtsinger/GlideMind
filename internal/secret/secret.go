@@ -24,10 +24,25 @@ const (
 	// more specific claim. Headless/CI use; never renewed: when it expires
 	// the 401 surfaces (exit 2) and the environment re-mints.
 	EnvToken = "GLM_TOKEN"
+
+	// EnvClientID / EnvClientSecret supply client-credentials material
+	// (DESIGN-OAUTH.md O8/O13): together with GLM_INSTANCE they make the
+	// synthetic env profile authenticate via the client-credentials grant;
+	// on a named client_credentials profile EnvClientSecret overrides the
+	// keyring secret (the EnvPassword rule). They never change a named
+	// profile's auth method — only EnvToken carries method+credential.
+	EnvClientID     = "GLM_CLIENT_ID"
+	EnvClientSecret = "GLM_CLIENT_SECRET"
 )
 
 // Token returns the GLM_TOKEN bearer credential, or "" when unset.
 func Token() string { return os.Getenv(EnvToken) }
+
+// ClientID returns the GLM_CLIENT_ID value, or "" when unset.
+func ClientID() string { return os.Getenv(EnvClientID) }
+
+// ClientSecret returns the GLM_CLIENT_SECRET value, or "" when unset.
+func ClientSecret() string { return os.Getenv(EnvClientSecret) }
 
 // Get returns the credential for a profile: GLM_PASSWORD if set, else the
 // OS keyring entry.

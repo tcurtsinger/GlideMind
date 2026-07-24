@@ -158,13 +158,14 @@ and docs while removing platform round-tripping.
 - Secrets in the OS keyring (Windows Credential Manager / macOS Keychain / Secret Service).
 - Everything overridable by env vars so containers/CI work with zero code changes. As-built,
   the recognized vars are `GLM_PROFILE`, `GLM_INSTANCE`, `GLM_USERNAME`, `GLM_PASSWORD`,
-  `GLM_CACHE_DIR`, and `GLM_TOKEN` (a pre-supplied static bearer that overrides the keyring for
-  any profile — [DESIGN-OAUTH.md](DESIGN-OAUTH.md) O8). `GLM_CLIENT_ID`/`GLM_CLIENT_SECRET`
-  arrive with the client-credentials grant (DESIGN-OAUTH.md O13).
-- v1 method as-built: **basic auth** for stored profiles (other stored methods are rejected
-  until their phases land), plus the `GLM_TOKEN` bearer override. Interactive OAuth (PKCE) and
-  client-credentials are designed and locked in [DESIGN-OAUTH.md](DESIGN-OAUTH.md); until the
-  remaining phases ship, MFA-enforced instances need a web-service-only service account.
+  `GLM_CACHE_DIR`, `GLM_TOKEN` (a pre-supplied static bearer that overrides the keyring for any
+  profile — [DESIGN-OAUTH.md](DESIGN-OAUTH.md) O8), and `GLM_CLIENT_ID`/`GLM_CLIENT_SECRET`
+  (client-credentials material; with `GLM_INSTANCE` they make the env profile mint via that
+  grant — O8/O13).
+- Auth methods as-built (designed and locked in [DESIGN-OAUTH.md](DESIGN-OAUTH.md)):
+  **basic**, **oauth** (interactive Authorization Code + PKCE via `glm profile login` —
+  acting-as-self through MFA), and **client_credentials** (non-interactive, runs as the
+  registry entry's designated user), plus the `GLM_TOKEN` bearer override for anything else.
 
 ## 10. Agent onboarding
 
@@ -244,8 +245,9 @@ The four workloads glm must serve, per actual usage:
   landed 2026-07-23, completing the designed verb surface. Bulk/import, attachment upload,
   choice-label resolution, and record sync remain deferred (W10)
 - Containerized deployment + MCP facade (trigger: Claude Desktop/web need)
-- ~~Interactive OAuth (PKCE)~~ — designed and locked in [DESIGN-OAUTH.md](DESIGN-OAUTH.md)
-  (PKCE acting-as-self + client-credentials; the `GLM_TOKEN` bearer override and the
-  authenticator seam shipped first, remaining phases in flight)
+- ~~Interactive OAuth (PKCE)~~ — designed, locked, and shipped per
+  [DESIGN-OAUTH.md](DESIGN-OAUTH.md): PKCE acting-as-self (`glm profile login`),
+  client-credentials, and the `GLM_TOKEN` bearer override; remaining step is live
+  registry-entry setup per instance
 - Attachment upload · import sets · background scripts · update sets
 - Watch/streaming · cross-instance federated queries · distribution (scoop/brew/goreleaser) · OSS release
