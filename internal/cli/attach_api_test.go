@@ -374,6 +374,7 @@ func TestPrimeListsEveryCommand(t *testing.T) {
 		"glm create <table> -f field=value",
 		"glm update <table> <key> -f field=value",
 		"glm delete <table> <key>",
+		"glm diff <table>",
 		"glm profile add <name>",
 		"encoded queries",
 		"--format ids",
@@ -382,10 +383,10 @@ func TestPrimeListsEveryCommand(t *testing.T) {
 			t.Errorf("prime output missing %q:\n%s", want, stdout)
 		}
 	}
-	// The whole point is a small prompt: keep prime bounded (~800 tokens —
-	// raised as the write verbs (create/update/delete) joined the surface;
-	// each verb earns its line by replacing raw-REST guesswork).
-	if len(stdout) > 3260 {
+	// The whole point is a small prompt: keep prime bounded (~825 tokens —
+	// raised as the write verbs (create/update/delete) and diff joined the
+	// surface; each verb earns its line by replacing raw-REST guesswork).
+	if len(stdout) > 3360 {
 		t.Errorf("prime output is %d chars — blowing the token budget", len(stdout))
 	}
 	if !strings.Contains(stdout, "Economy:") || !strings.Contains(stdout, "count/agg before listing") {
