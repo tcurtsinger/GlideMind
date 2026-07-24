@@ -21,6 +21,7 @@ var (
 	loadClientSecret   = oauth.LoadClientSecret
 	saveClientSecret   = oauth.SaveClientSecret
 	deleteClientSecret = oauth.DeleteClientSecret
+	deletePassword     = secret.Delete
 	runOAuthLogin      = oauth.Login
 )
 
@@ -76,11 +77,14 @@ func (s *tokenSource) Token(ctx context.Context) (string, error) {
 	return s.renewLocked(ctx)
 }
 
-func (s *tokenSource) Renew(ctx context.Context) bool {
+// Renew's error replaces the raw 401 for the caller (snow renewOn401), so
+// the corrective message — "run: glm profile login <name>", a rejected
+// client secret — survives to the user instead of a bare HTTP 401.
+func (s *tokenSource) Renew(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.renewLocked(ctx)
-	return err == nil
+	return err
 }
 
 func (s *tokenSource) renewLocked(ctx context.Context) (string, error) {

@@ -43,14 +43,17 @@ type Client struct {
 
 // authenticator injects credentials into outgoing requests (DESIGN-OAUTH.md
 // O7). apply sets the Authorization material on one request. retryAuth is
-// consulted at most once per call after an HTTP 401: an implementation that
-// can renew its credential does so and returns true to trigger a single
-// retry; static credentials return false so the 401 surfaces immediately.
-// A 401 is rejected before the instance processes the request, so the one
-// retry never violates the write path's send-once contract.
+// consulted at most once per call after an HTTP 401: (true, nil) means the
+// credential was renewed and the request retries once; (false, nil) means
+// it cannot renew, so the 401 surfaces; a non-nil error means renewal was
+// attempted and FAILED — that error replaces the raw 401, because it names
+// the remedy (an expired session's corrective login, a rejected client
+// secret) where the 401 alone would not. A 401 is rejected before the
+// instance processes the request, so the one retry never violates the
+// write path's send-once contract.
 type authenticator interface {
 	apply(req *http.Request) error
-	retryAuth(ctx context.Context) bool
+	retryAuth(ctx context.Context) (bool, error)
 }
 
 type basicAuth struct{ username, password string }
@@ -60,7 +63,7 @@ func (a basicAuth) apply(req *http.Request) error {
 	return nil
 }
 
-func (a basicAuth) retryAuth(context.Context) bool { return false }
+func (a basicAuth) retryAuth(context.Context) (bool, error) { return false, nil }
 
 type bearerAuth struct{ token string }
 
@@ -69,18 +72,19 @@ func (a bearerAuth) apply(req *http.Request) error {
 	return nil
 }
 
-func (a bearerAuth) retryAuth(context.Context) bool { return false }
+func (a bearerAuth) retryAuth(context.Context) (bool, error) { return false, nil }
 
 // TokenSource supplies and renews a bearer token — the seam the OAuth
 // grants plug into (DESIGN-OAUTH.md O6/O7). Token returns a currently
 // usable access token, minting or refreshing as needed; an error means the
 // credential is unobtainable (e.g. an expired session needing an
-// interactive login). Renew is consulted once per call after an HTTP 401:
-// return true only when a genuinely new credential was obtained.
+// interactive login). Renew is consulted once per call after an HTTP 401
+// and returns nil only when a genuinely new credential was obtained; its
+// error replaces the raw 401 for the caller, so it must name the remedy.
 // Implementations must be safe for concurrent use.
 type TokenSource interface {
 	Token(ctx context.Context) (string, error)
-	Renew(ctx context.Context) bool
+	Renew(ctx context.Context) error
 }
 
 type sourceAuth struct{ src TokenSource }
@@ -94,7 +98,12 @@ func (a sourceAuth) apply(req *http.Request) error {
 	return nil
 }
 
-func (a sourceAuth) retryAuth(ctx context.Context) bool { return a.src.Renew(ctx) }
+func (a sourceAuth) retryAuth(ctx context.Context) (bool, error) {
+	if err := a.src.Renew(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
 
 // NormalizeInstance turns "acme", "acme.service-now.com", or a full URL into
 // a base URL.
@@ -314,7 +323,11 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out
 			return nil, &NetworkError{Err: err}
 		}
 
-		if c.renewOn401(ctx, resp, &renewed) {
+		retry, rerr := c.renewOn401(ctx, resp, &renewed)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if retry {
 			c.log("HTTP 401, retrying with renewed credentials")
 			continue
 		}
@@ -331,18 +344,29 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out
 	}
 }
 
-// renewOn401 reports whether a 401 response should be retried: the
-// authenticator renewed its credential and this call has not yet spent its
-// single renewal. On true the response body is drained so the retry can
-// reuse the connection.
-func (c *Client) renewOn401(ctx context.Context, resp *http.Response, renewed *bool) bool {
-	if resp.StatusCode != http.StatusUnauthorized || *renewed || !c.auth.retryAuth(ctx) {
-		return false
+// renewOn401 decides what a 401 response means: (true, nil) — the
+// authenticator renewed its credential, the body is drained, retry once;
+// (false, nil) — not renewable (or the single renewal is spent), decode
+// the 401 as usual; (false, err) — renewal was ATTEMPTED and failed, and
+// that error replaces the raw 401 because it names the remedy the 401
+// cannot (the corrective login command, a rejected client secret).
+func (c *Client) renewOn401(ctx context.Context, resp *http.Response, renewed *bool) (bool, error) {
+	if resp.StatusCode != http.StatusUnauthorized || *renewed {
+		return false, nil
+	}
+	ok, err := c.auth.retryAuth(ctx)
+	if err != nil {
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		return false, err
+	}
+	if !ok {
+		return false, nil
 	}
 	*renewed = true
 	io.Copy(io.Discard, resp.Body) //nolint:errcheck
 	resp.Body.Close()
-	return true
+	return true, nil
 }
 
 // retryAfter reports whether the response is retryable (429/503) within the
@@ -394,7 +418,11 @@ func (c *Client) Raw(ctx context.Context, method, path string, query url.Values,
 		if err != nil {
 			return nil, &NetworkError{Err: err}
 		}
-		if c.renewOn401(ctx, resp, &renewed) {
+		retry, rerr := c.renewOn401(ctx, resp, &renewed)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if retry {
 			c.log("HTTP 401, retrying with renewed credentials")
 			continue
 		}
@@ -507,7 +535,11 @@ func (c *Client) DownloadAttachment(ctx context.Context, sysID string, w io.Writ
 		if err != nil {
 			return 0, &NetworkError{Err: err}
 		}
-		if c.renewOn401(ctx, resp, &renewed) {
+		retry, rerr := c.renewOn401(ctx, resp, &renewed)
+		if rerr != nil {
+			return 0, rerr
+		}
+		if retry {
 			c.log("HTTP 401, retrying with renewed credentials")
 			continue
 		}

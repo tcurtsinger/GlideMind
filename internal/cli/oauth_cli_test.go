@@ -31,15 +31,20 @@ func stubStore(t *testing.T) *fakeStore {
 	fs := &fakeStore{tokens: map[string]*oauth.Token{}, secrets: map[string]string{}}
 	origLT, origST, origDT := loadStoredToken, saveStoredToken, deleteStoredToken
 	origLS, origSS, origDS := loadClientSecret, saveClientSecret, deleteClientSecret
+	origDP := deletePassword
 	loadStoredToken = func(p string) (*oauth.Token, bool) { tok, ok := fs.tokens[p]; return tok, ok }
 	saveStoredToken = func(p string, tok *oauth.Token) error { fs.saves++; fs.tokens[p] = tok; return nil }
 	deleteStoredToken = func(p string) error { delete(fs.tokens, p); return nil }
 	loadClientSecret = func(p string) (string, bool) { s, ok := fs.secrets[p]; return s, ok }
 	saveClientSecret = func(p, v string) error { fs.secrets[p] = v; return nil }
 	deleteClientSecret = func(p string) error { delete(fs.secrets, p); return nil }
+	// The password delete too: `profile remove` reaches the real keyring
+	// otherwise, which does not exist on headless CI (Linux).
+	deletePassword = func(string) error { return nil }
 	t.Cleanup(func() {
 		loadStoredToken, saveStoredToken, deleteStoredToken = origLT, origST, origDT
 		loadClientSecret, saveClientSecret, deleteClientSecret = origLS, origSS, origDS
+		deletePassword = origDP
 	})
 	return fs
 }
@@ -242,6 +247,49 @@ func TestOAuthProfileRefreshFailureNamesLogin(t *testing.T) {
 	var ec exitCoder
 	if !errors.As(err, &ec) || ec.ExitCode() != exit.Auth {
 		t.Errorf("refresh failure maps to exit %d, got %v", exit.Auth, err)
+	}
+}
+
+func TestOAuthProfileRevokedTokenNamesLogin(t *testing.T) {
+	// Codex P2 (PR #25): a clock-valid but instance-revoked token 401s;
+	// when the refresh then fails too, the user must see the corrective
+	// login command — not the raw 401 the renewal error replaced.
+	rec := newOAuthInstance(t)
+	rec.api401 = func(string) bool { return true }
+	rec.tokenFail = true
+	fs := stubStore(t)
+	oauthProfile(t, rec, "p", config.AuthOAuth)
+	fs.tokens["p"] = &oauth.Token{AccessToken: "at-revoked", RefreshToken: "rt-dead", Expiry: time.Now().Add(time.Hour)}
+
+	_, _, err := execRoot(t, "-p", "p", "count", "x")
+	if err == nil || !strings.Contains(err.Error(), "glm profile login p") {
+		t.Fatalf("a failed renewal must surface the corrective login, got %v", err)
+	}
+	var ec exitCoder
+	if !errors.As(err, &ec) || ec.ExitCode() != exit.Auth {
+		t.Errorf("want exit %d, got %v", exit.Auth, err)
+	}
+}
+
+func TestProfileRemoveReportsKeyringFailure(t *testing.T) {
+	// Codex P2 (PR #25): the delete helpers treat a missing entry as
+	// success, so any error is a real keyring failure — remove must report
+	// it instead of printing success while credentials linger.
+	rec := newOAuthInstance(t)
+	stubStore(t)
+	oauthProfile(t, rec, "p", config.AuthOAuth)
+	origDT := deleteStoredToken
+	deleteStoredToken = func(string) error { return fmt.Errorf("keyring locked") }
+	t.Cleanup(func() { deleteStoredToken = origDT })
+
+	_, _, err := execRoot(t, "profile", "remove", "p")
+	if err == nil || !strings.Contains(err.Error(), "keyring") {
+		t.Fatalf("a real keyring failure must be reported, got %v", err)
+	}
+	if f, _ := config.Load(); f != nil {
+		if _, ok := f.Profiles["p"]; ok {
+			t.Error("the config removal itself should still have happened")
+		}
 	}
 }
 

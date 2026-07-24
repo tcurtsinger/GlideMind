@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -562,12 +563,23 @@ func newProfileRemoveCmd() *cobra.Command {
 			if err := f.Save(); err != nil {
 				return err
 			}
-			// OAuth state goes with the profile: tokens and client secret
-			// (best effort — a missing entry is not an error).
-			_ = deleteStoredToken(name)
-			_ = deleteClientSecret(name)
-			if err := secret.Delete(name); err != nil {
-				return fmt.Errorf("profile removed from config, but deleting its keyring credential failed: %w", err)
+			// Every keyring entry goes with the profile: password, OAuth
+			// tokens, client secret. The delete helpers already treat a
+			// missing entry as success, so any error here is a REAL keyring
+			// failure — and printing success while credentials linger would
+			// break remove's promise, so it is reported, not swallowed.
+			var kerrs []error
+			if err := deleteStoredToken(name); err != nil {
+				kerrs = append(kerrs, err)
+			}
+			if err := deleteClientSecret(name); err != nil {
+				kerrs = append(kerrs, err)
+			}
+			if err := deletePassword(name); err != nil {
+				kerrs = append(kerrs, err)
+			}
+			if len(kerrs) > 0 {
+				return fmt.Errorf("profile removed from config, but deleting its keyring material failed: %w", errors.Join(kerrs...))
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "profile %q removed\n", name)
 			return nil
