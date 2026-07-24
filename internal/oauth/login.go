@@ -57,10 +57,13 @@ type callbackResult struct {
 
 // Login runs the interactive Authorization Code + PKCE flow (O1, O3, O4):
 // start a loopback listener, send the user's browser to the instance's
-// authorization endpoint, capture the single callback, and exchange the
-// code. The listener binds loopback only, validates state, and treats a
-// mismatched or error callback as terminal — a forged callback must fail
-// loudly, never be silently ignored (O11).
+// authorization endpoint, capture the callback, and exchange the code. The
+// listener binds loopback only, and the random state gates everything
+// (O11): only a callback carrying this attempt's state — success or error,
+// since the authorization server echoes state on both — can complete or
+// consume the attempt. Anything else (any local page can hit the fixed
+// callback URL while a login is pending) gets a 400 and the listener keeps
+// waiting for the genuine response.
 func Login(ctx context.Context, cfg Config) (*Token, error) {
 	if cfg.ClientID == "" {
 		return nil, &ConfigError{Msg: "OAuth login needs a client_id on the profile"}
@@ -92,40 +95,49 @@ func Login(ctx context.Context, cfg Config) (*Token, error) {
 	authURL := cfg.Endpoints.AuthURL + "?" + q.Encode()
 
 	results := make(chan callbackResult, 1)
-	var once sync.Once
+	var mu sync.Mutex
+	settled := false
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != callbackPath {
 			http.NotFound(w, r)
 			return
 		}
-		handled := false
-		once.Do(func() {
-			handled = true
-			params := r.URL.Query()
-			res := callbackResult{}
-			switch {
-			case params.Get("error") != "":
-				res.err = &AuthError{Msg: "authorization refused", Detail: joinNonEmpty(params.Get("error"), params.Get("error_description"))}
-			case subtle.ConstantTimeCompare([]byte(params.Get("state")), []byte(state)) != 1:
-				res.err = &AuthError{Msg: "callback state mismatch — the response does not belong to this login attempt"}
-			case params.Get("code") == "":
-				res.err = &AuthError{Msg: "callback carried no authorization code"}
-			default:
-				res.code = params.Get("code")
-			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			if res.err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprint(w, failurePage) //nolint:errcheck
-			} else {
-				fmt.Fprint(w, successPage) //nolint:errcheck
-			}
-			results <- res
-		})
-		if !handled {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		params := r.URL.Query()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		mu.Lock()
+		defer mu.Unlock()
+		if settled {
 			fmt.Fprint(w, donePage) //nolint:errcheck
+			return
 		}
+		// The state check comes FIRST, before honoring error or code: only
+		// the authorization server's response carries this attempt's random
+		// state (echoed on both success and error), so a stateless request
+		// from some other local process can neither complete the attempt
+		// nor consume it — it gets a 400 and the wait continues.
+		if subtle.ConstantTimeCompare([]byte(params.Get("state")), []byte(state)) != 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, failurePage) //nolint:errcheck
+			cfg.notify("glm: ignored a callback with a missing or mismatched state — still waiting for the sign-in")
+			return
+		}
+		res := callbackResult{}
+		switch {
+		case params.Get("error") != "":
+			res.err = &AuthError{Msg: "authorization refused", Detail: joinNonEmpty(params.Get("error"), params.Get("error_description"))}
+		case params.Get("code") == "":
+			res.err = &AuthError{Msg: "callback carried no authorization code"}
+		default:
+			res.code = params.Get("code")
+		}
+		if res.err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, failurePage) //nolint:errcheck
+		} else {
+			fmt.Fprint(w, successPage) //nolint:errcheck
+		}
+		settled = true
+		results <- res
 	})}
 	for _, ln := range listeners {
 		go srv.Serve(ln) //nolint:errcheck

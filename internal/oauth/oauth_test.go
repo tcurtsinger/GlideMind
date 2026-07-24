@@ -207,27 +207,47 @@ func TestLoginFullFlow(t *testing.T) {
 	}
 }
 
-func TestLoginStateMismatchIsTerminal(t *testing.T) {
+func TestLoginForgedCallbackCannotConsumeAttempt(t *testing.T) {
+	// Codex P2 (PR #24): any local process can hit the fixed callback URL
+	// while a login is pending. Without this attempt's random state it must
+	// be able neither to complete the attempt nor to consume it — notably
+	// a stateless ?error=access_denied must not fake a denial. The genuine
+	// callback afterwards still succeeds.
 	h := newLoginHarness(t, func(w http.ResponseWriter, r *http.Request) {
-		t.Error("token endpoint must never be called on a forged callback")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"at","refresh_token":"rt","expires_in":1800}`) //nolint:errcheck
 	})
-	done := make(chan error, 1)
+	type result struct {
+		tok *Token
+		err error
+	}
+	done := make(chan result, 1)
 	go func() {
-		_, err := Login(context.Background(), h.cfg)
-		done <- err
+		tok, err := Login(context.Background(), h.cfg)
+		done <- result{tok, err}
 	}()
-	_, redirectURI := h.browse(t)
-	resp := callback(t, redirectURI, url.Values{"code": {"x"}, "state": {"forged"}})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("forged callback should get HTTP 400, got %d", resp.StatusCode)
+	q, redirectURI := h.browse(t)
+
+	forged := []url.Values{
+		{"error": {"access_denied"}},              // the drive-by denial
+		{"code": {"stolen"}, "state": {"forged"}}, // wrong state
+		{"code": {"stolen"}},                      // no state at all
 	}
-	err := <-done
-	var authErr *AuthError
-	if !errors.As(err, &authErr) || !strings.Contains(err.Error(), "state mismatch") {
-		t.Fatalf("want state-mismatch AuthError, got %v", err)
+	for _, f := range forged {
+		if resp := callback(t, redirectURI, f); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("forged callback %v should get HTTP 400, got %d", f, resp.StatusCode)
+		}
 	}
-	if authErr.ExitCode() != exit.Auth {
-		t.Errorf("auth failures map to exit %d, got %d", exit.Auth, authErr.ExitCode())
+	select {
+	case res := <-done:
+		t.Fatalf("a forged callback consumed the attempt: %+v", res)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	callback(t, redirectURI, url.Values{"code": {"real"}, "state": {q.Get("state")}})
+	res := <-done
+	if res.err != nil || res.tok.AccessToken != "at" {
+		t.Fatalf("genuine callback after forgeries must still succeed, got %+v / %v", res.tok, res.err)
 	}
 }
 
