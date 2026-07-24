@@ -204,6 +204,33 @@ func TestIdentityLineAndAuditUserUnderToken(t *testing.T) {
 	}
 }
 
+func TestGlmTokenBypassesAuthMethodValidation(t *testing.T) {
+	// Codex P2 (PR #23): a staged profile with a not-yet-shipped auth method
+	// (oauth, client_credentials) must still be usable under GLM_TOKEN — the
+	// token displaces the profile's method, and the method check only exists
+	// to fail fast when glm cannot build a credential. Without a token the
+	// rejection stands.
+	var auths []string
+	srv := countServer(t, &auths)
+	pointConfigAt(t)
+	writeConfig(t, &config.File{Profiles: map[string]config.Profile{
+		"o": {Instance: srv.URL, Auth: "oauth", Username: "u"},
+	}})
+
+	_, _, err := execRoot(t, "-p", "o", "count", "x")
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("an oauth profile without a token must still be rejected, got %v", err)
+	}
+
+	t.Setenv(secret.EnvToken, "tok-7")
+	if _, _, err := execRoot(t, "-p", "o", "count", "x"); err != nil {
+		t.Fatalf("GLM_TOKEN must make a staged oauth profile usable: %v", err)
+	}
+	if len(auths) == 0 || auths[len(auths)-1] != "Bearer tok-7" {
+		t.Errorf("want bearer auth, got %v", auths)
+	}
+}
+
 func TestBearerIdentityNeverStoredUsername(t *testing.T) {
 	// Codex P2 (PR #23): the ACL-filtered schema cache keys on
 	// Client.Username, so a bearer run must never key it by a stored

@@ -42,8 +42,13 @@ func resolveProfile(cmd *cobra.Command, flagName string) (*config.Resolved, erro
 		}
 		fmt.Fprintln(cmd.ErrOrStderr(), output.SanitizeLine(stamp))
 	}
-	if res.Profile.Auth != "" && res.Profile.Auth != "basic" {
-		return nil, fmt.Errorf("profile %q: auth method %q is not supported yet (v1 supports: basic)", res.Name, res.Profile.Auth)
+	// The auth-method check exists to fail fast when glm cannot build a
+	// credential for the stored method. A GLM_TOKEN bearer displaces the
+	// profile's method entirely (Resolution 2: token overrides ANY profile),
+	// so a staged oauth/client_credentials profile — or any future method —
+	// stays usable under a token while its own phase is still unshipped.
+	if res.Profile.Auth != "" && res.Profile.Auth != "basic" && secret.Token() == "" {
+		return nil, fmt.Errorf("profile %q: auth method %q is not supported yet (v1 supports: basic, or a GLM_TOKEN bearer)", res.Name, res.Profile.Auth)
 	}
 	return res, nil
 }
