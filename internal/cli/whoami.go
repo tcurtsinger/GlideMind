@@ -29,8 +29,20 @@ func newWhoamiCmd() *cobra.Command {
 			fmt.Fprintf(out, "profile   %s (%s)\n", res.Name, res.Source)
 			fmt.Fprintf(out, "instance  %s\n", client.BaseURL())
 
+			// A bearer credential (GLM_TOKEN, and later OAuth) authenticates
+			// as whoever the token says — which may differ from any stored
+			// username — so identity is resolved by the instance whenever
+			// token auth is active, not only when the username is blank
+			// (DESIGN-OAUTH.md O10). Basic profiles keep the explicit query:
+			// it also verifies the configured username matches a real record.
+			username := res.Profile.Username
+			tokenIdent := username == "" || client.TokenIdentity()
+			userQuery := "user_name=" + username
+			if tokenIdent {
+				userQuery = "sys_id=javascript:gs.getUserID()"
+			}
 			q := url.Values{}
-			q.Set("sysparm_query", "user_name="+res.Profile.Username)
+			q.Set("sysparm_query", userQuery)
 			q.Set("sysparm_fields", "user_name,name,email,title")
 			q.Set("sysparm_limit", "1")
 			q.Set("sysparm_display_value", "true")
@@ -40,10 +52,17 @@ func newWhoamiCmd() *cobra.Command {
 				return err
 			}
 			if len(users) == 0 {
-				fmt.Fprintf(out, "user      %s (authenticated, but its sys_user record is not visible)\n", res.Profile.Username)
+				if tokenIdent {
+					fmt.Fprintln(out, "user      (authenticated via token, but its sys_user record is not visible)")
+				} else {
+					fmt.Fprintf(out, "user      %s (authenticated, but its sys_user record is not visible)\n", username)
+				}
 				return nil
 			}
 			u := users[0]
+			if tokenIdent {
+				username = field(u, "user_name")
+			}
 			fmt.Fprintf(out, "user      %s (%s)\n", field(u, "user_name"), field(u, "name"))
 			if email := field(u, "email"); email != "" {
 				fmt.Fprintf(out, "email     %s\n", email)
@@ -59,7 +78,7 @@ func newWhoamiCmd() *cobra.Command {
 			names := map[string]bool{}
 			for offset := 0; ; offset += rolePage {
 				rq := url.Values{}
-				rq.Set("sysparm_query", "user.user_name="+res.Profile.Username+"^ORDERBYsys_id")
+				rq.Set("sysparm_query", "user.user_name="+username+"^ORDERBYsys_id")
 				rq.Set("sysparm_fields", "role.name")
 				rq.Set("sysparm_limit", strconv.Itoa(rolePage))
 				rq.Set("sysparm_offset", strconv.Itoa(offset))

@@ -120,7 +120,7 @@ func newAPICmd() *cobra.Command {
 					Time:     time.Now().UTC(),
 					Instance: res.Profile.Instance,
 					Profile:  res.Name,
-					User:     res.Profile.Username,
+					User:     auditUser(res),
 					Command:  "api",
 					Method:   method,
 					Target:   target,

@@ -313,16 +313,34 @@ func newProfileTestCmd() *cobra.Command {
 				return err
 			}
 
+			// Mirrors whoami: token-derived identity (GLM_TOKEN, later
+			// OAuth) is resolved by the instance, never trusted from config —
+			// a stored username may not be who the token actually is.
+			identity := res.Profile.Username
+			tokenIdent := identity == "" || client.TokenIdentity()
+			userQuery := "user_name=" + identity
+			if tokenIdent {
+				userQuery = "sys_id=javascript:gs.getUserID()"
+			}
 			q := url.Values{}
-			q.Set("sysparm_query", "user_name="+res.Profile.Username)
-			q.Set("sysparm_fields", "sys_id")
+			q.Set("sysparm_query", userQuery)
+			q.Set("sysparm_fields", "sys_id,user_name")
 			q.Set("sysparm_limit", "1")
 			start := time.Now()
-			if _, err := client.Table(cmd.Context(), "sys_user", q); err != nil {
+			rows, err := client.Table(cmd.Context(), "sys_user", q)
+			if err != nil {
 				return err
 			}
+			if tokenIdent {
+				identity = "(token)"
+				if len(rows) > 0 {
+					if n := field(rows[0], "user_name"); n != "" {
+						identity = n
+					}
+				}
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "ok — %s as %s (%dms)\n",
-				client.BaseURL(), res.Profile.Username, time.Since(start).Milliseconds())
+				client.BaseURL(), identity, time.Since(start).Milliseconds())
 			return nil
 		},
 	}

@@ -2,7 +2,10 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -39,8 +42,13 @@ func resolveProfile(cmd *cobra.Command, flagName string) (*config.Resolved, erro
 		}
 		fmt.Fprintln(cmd.ErrOrStderr(), output.SanitizeLine(stamp))
 	}
-	if res.Profile.Auth != "" && res.Profile.Auth != "basic" {
-		return nil, fmt.Errorf("profile %q: auth method %q is not supported yet (v1 supports: basic)", res.Name, res.Profile.Auth)
+	// The auth-method check exists to fail fast when glm cannot build a
+	// credential for the stored method. A GLM_TOKEN bearer displaces the
+	// profile's method entirely (Resolution 2: token overrides ANY profile),
+	// so a staged oauth/client_credentials profile — or any future method —
+	// stays usable under a token while its own phase is still unshipped.
+	if res.Profile.Auth != "" && res.Profile.Auth != "basic" && secret.Token() == "" {
+		return nil, fmt.Errorf("profile %q: auth method %q is not supported yet (v1 supports: basic, or a GLM_TOKEN bearer)", res.Name, res.Profile.Auth)
 	}
 	return res, nil
 }
@@ -66,21 +74,65 @@ func requireWritable(res *config.Resolved) error {
 
 // identityLine renders the acting identity for a write preview (W7): who the
 // write runs as, where, and through which profile — a write must never land
-// under an unexpected identity or instance.
+// under an unexpected identity or instance. Under GLM_TOKEN the stored
+// username is NOT who the write runs as — the token's identity is — and W7
+// must never name the wrong account, so the line says what it truly knows
+// and points at the check.
 func identityLine(res *config.Resolved) string {
-	return output.SanitizeLine(fmt.Sprintf("as %s @ %s (profile %s)", res.Profile.Username, strings.TrimPrefix(res.Profile.Instance, "https://"), res.Name))
+	who := res.Profile.Username
+	if secret.Token() != "" {
+		who = "the GLM_TOKEN bearer (verify: glm whoami)"
+	}
+	return output.SanitizeLine(fmt.Sprintf("as %s @ %s (profile %s)", who, strings.TrimPrefix(res.Profile.Instance, "https://"), res.Name))
+}
+
+// bearerIdentity names the identity a GLM_TOKEN client runs as, which keys
+// the ACL-filtered per-user schema cache (Client.Username). The stored
+// profile username is NEVER used here: the token may be a different account,
+// and a bearer run must not reuse or overwrite the stored user's cache. An
+// explicit GLM_USERNAME is an authoritative claim about the credential in
+// use; otherwise a short digest of the token keys the cache — distinct per
+// credential, stable for its lifetime.
+func bearerIdentity(token string) string {
+	if u := os.Getenv(config.EnvUsername); u != "" {
+		return u
+	}
+	sum := sha256.Sum256([]byte(token))
+	return "token-" + hex.EncodeToString(sum[:6])
+}
+
+// auditUser is the identity stamped into audit entries (W6). Under GLM_TOKEN
+// the stored username is not who the write ran as — a wrong name in the
+// audit trail is worse than an honest unknown, and the instance's own
+// sys_audit holds the authoritative identity.
+func auditUser(res *config.Resolved) string {
+	if secret.Token() != "" {
+		return "(GLM_TOKEN bearer)"
+	}
+	return res.Profile.Username
 }
 
 // clientForResolved builds an authenticated client for an already-resolved
 // profile (credential lookup happens here).
 func clientForResolved(cmd *cobra.Command, res *config.Resolved) (*snow.Client, error) {
-	password, err := secret.Get(res.Name)
-	if err != nil {
-		return nil, err
-	}
-
 	timeout, _ := cmd.Flags().GetDuration("timeout")
-	client, err := snow.NewBasic(res.Profile.Instance, res.Profile.Username, password, timeout)
+
+	var client *snow.Client
+	var err error
+	if token := secret.Token(); token != "" {
+		// GLM_TOKEN supplies a static bearer for ANY profile — the same
+		// precedence GLM_PASSWORD established (the profile picks the
+		// instance, env may supply the credential), beating GLM_PASSWORD
+		// when both are set (DESIGN-OAUTH.md O8, Resolution 2).
+		client, err = snow.NewBearer(res.Profile.Instance, token, bearerIdentity(token), timeout)
+	} else {
+		var password string
+		password, err = secret.Get(res.Name)
+		if err != nil {
+			return nil, err
+		}
+		client, err = snow.NewBasic(res.Profile.Instance, res.Profile.Username, password, timeout)
+	}
 	if err != nil {
 		return nil, err
 	}
