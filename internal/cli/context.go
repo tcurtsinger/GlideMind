@@ -2,7 +2,10 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -78,6 +81,21 @@ func identityLine(res *config.Resolved) string {
 	return output.SanitizeLine(fmt.Sprintf("as %s @ %s (profile %s)", who, strings.TrimPrefix(res.Profile.Instance, "https://"), res.Name))
 }
 
+// bearerIdentity names the identity a GLM_TOKEN client runs as, which keys
+// the ACL-filtered per-user schema cache (Client.Username). The stored
+// profile username is NEVER used here: the token may be a different account,
+// and a bearer run must not reuse or overwrite the stored user's cache. An
+// explicit GLM_USERNAME is an authoritative claim about the credential in
+// use; otherwise a short digest of the token keys the cache — distinct per
+// credential, stable for its lifetime.
+func bearerIdentity(token string) string {
+	if u := os.Getenv(config.EnvUsername); u != "" {
+		return u
+	}
+	sum := sha256.Sum256([]byte(token))
+	return "token-" + hex.EncodeToString(sum[:6])
+}
+
 // auditUser is the identity stamped into audit entries (W6). Under GLM_TOKEN
 // the stored username is not who the write ran as — a wrong name in the
 // audit trail is worse than an honest unknown, and the instance's own
@@ -100,17 +118,8 @@ func clientForResolved(cmd *cobra.Command, res *config.Resolved) (*snow.Client, 
 		// GLM_TOKEN supplies a static bearer for ANY profile — the same
 		// precedence GLM_PASSWORD established (the profile picks the
 		// instance, env may supply the credential), beating GLM_PASSWORD
-		// when both are set (DESIGN-OAUTH.md O8, Resolution 2). The schema
-		// cache is keyed per user (dictionary reads are ACL-filtered); a
-		// bearer may not know its identity, so GLM_USERNAME (already folded
-		// into the profile by config.Resolve) names it, else a stable
-		// pseudo-user keys the cache — fine for the one-identity-per-
-		// environment CI norm.
-		username := res.Profile.Username
-		if username == "" {
-			username = "token"
-		}
-		client, err = snow.NewBearer(res.Profile.Instance, token, username, timeout)
+		// when both are set (DESIGN-OAUTH.md O8, Resolution 2).
+		client, err = snow.NewBearer(res.Profile.Instance, token, bearerIdentity(token), timeout)
 	} else {
 		var password string
 		password, err = secret.Get(res.Name)

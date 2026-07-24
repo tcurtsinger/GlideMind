@@ -204,6 +204,29 @@ func TestIdentityLineAndAuditUserUnderToken(t *testing.T) {
 	}
 }
 
+func TestBearerIdentityNeverStoredUsername(t *testing.T) {
+	// Codex P2 (PR #23): the ACL-filtered schema cache keys on
+	// Client.Username, so a bearer run must never key it by a stored
+	// profile username the token may not be. GLM_USERNAME is an explicit
+	// claim and wins; otherwise the key derives from the token itself —
+	// distinct per credential, stable for its lifetime.
+	t.Setenv(config.EnvUsername, "")
+	a1, a2, b := bearerIdentity("tok-a"), bearerIdentity("tok-a"), bearerIdentity("tok-b")
+	if a1 != a2 {
+		t.Errorf("identity must be stable for one token: %q vs %q", a1, a2)
+	}
+	if a1 == b {
+		t.Errorf("different tokens must not share a cache identity: %q", a1)
+	}
+	if !strings.HasPrefix(a1, "token-") {
+		t.Errorf("derived identity should be recognizable, got %q", a1)
+	}
+	t.Setenv(config.EnvUsername, "me")
+	if got := bearerIdentity("tok-a"); got != "me" {
+		t.Errorf("explicit GLM_USERNAME must win, got %q", got)
+	}
+}
+
 func TestGlmTokenEnvProfileStaysReadOnly(t *testing.T) {
 	// W1 is untouched by the credential: the synthetic env profile is
 	// read-only no matter how it authenticates.

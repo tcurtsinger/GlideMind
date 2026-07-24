@@ -176,9 +176,10 @@ testable: unit tests inject a fake authenticator; flow tests point the token end
   specific first: `GLM_TOKEN` → bearer; else `GLM_CLIENT_ID`+`GLM_CLIENT_SECRET` →
   client-credentials; else `GLM_USERNAME`+`GLM_PASSWORD` → basic. It remains read-only per W1,
   unchanged — this is about who supplies the credential, never writability.
-- The schema cache is keyed per user (dictionary reads are ACL-filtered); when the username is
-  unknown (bearer/CC without a stored name), `GLM_USERNAME` supplies it, else the cache keys on
-  a `token` pseudo-user (documented; fine for the one-identity-per-environment CI norm).
+- The schema cache is keyed per user (dictionary reads are ACL-filtered); under `GLM_TOKEN` a
+  stored profile username is never trusted for that key (the token may be a different account).
+  `GLM_USERNAME` supplies the identity explicitly, else the cache keys on a short digest of the
+  token itself — distinct per credential, stable for its lifetime.
 
 ## O9 — Confidential-client fallback (PKCE)
 
