@@ -325,7 +325,13 @@ func oneSidedMsg(missA, missB bool, nameA, nameB, subject string) string {
 func validateDiffFields(ctx context.Context, storeA, storeB *schema.Store, table string, fields []string) error {
 	metas, err := diffMetas(ctx, storeA, storeB, table, false)
 	if err != nil {
-		return err
+		// Schema ACCESS failed (a least-privilege profile without
+		// sys_dictionary/sys_db_object read, or the endpoint temporarily
+		// blocked). Unavailable metadata cannot prove a field wrong, and an
+		// otherwise valid record diff must not become unusable for such
+		// profiles — only a loaded dictionary may reject a field. A real
+		// connectivity problem still surfaces from the record fetch itself.
+		return nil
 	}
 	if len(metas) == 0 || firstUnknownField(metas, fields) == nil {
 		return nil
@@ -368,13 +374,17 @@ func diffMetas(ctx context.Context, storeA, storeB *schema.Store, table string, 
 
 // firstUnknownField returns the validation error for the first field provably
 // unknown on EVERY meta (the union check), or nil when each field is known on
-// at least one instance (or no dictionary can prove it wrong).
+// at least one instance (or no dictionary can prove it wrong). The STRICT
+// check is used — no sys_* bypass: a diff is a truth claim, and a typo'd
+// system field ("sys_update_on") read as "" on both sides would report the
+// records as identical. ValidateStrict keeps the partial-dictionary leniency,
+// so an ACL-filtered dictionary still cannot prove any field wrong.
 func firstUnknownField(metas []*schema.TableMeta, fields []string) error {
 	for _, f := range fields {
 		known := false
 		var reject error
 		for _, m := range metas {
-			if err := m.Validate([]string{f}); err == nil {
+			if err := m.ValidateStrict([]string{f}); err == nil {
 				known = true
 				break
 			} else {
