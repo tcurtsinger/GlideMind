@@ -83,8 +83,14 @@ func requireWritable(res *config.Resolved) error {
 // and points at the check.
 func identityLine(res *config.Resolved) string {
 	who := res.Profile.Username
-	if secret.Token() != "" {
+	switch {
+	case secret.Token() != "":
 		who = "the GLM_TOKEN bearer (verify: glm whoami)"
+	case who == "" && res.Profile.Auth != "" && res.Profile.Auth != config.AuthBasic:
+		// A token-auth profile that has never been through `profile login`
+		// has no resolved identity — W7 says what it knows and names the
+		// resolver rather than rendering an empty (or wrong) name.
+		who = fmt.Sprintf("this profile's token identity (unresolved — run: glm profile login %s)", res.Name)
 	}
 	return output.SanitizeLine(fmt.Sprintf("as %s @ %s (profile %s)", who, strings.TrimPrefix(res.Profile.Instance, "https://"), res.Name))
 }
@@ -111,6 +117,11 @@ func bearerIdentity(token string) string {
 func auditUser(res *config.Resolved) string {
 	if secret.Token() != "" {
 		return "(GLM_TOKEN bearer)"
+	}
+	if res.Profile.Username == "" && res.Profile.Auth != "" && res.Profile.Auth != config.AuthBasic {
+		// Same honesty as identityLine: never stamp an empty user for a
+		// token-auth profile whose identity was never resolved.
+		return "(unresolved token identity)"
 	}
 	return res.Profile.Username
 }

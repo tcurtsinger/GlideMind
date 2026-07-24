@@ -175,9 +175,44 @@ func newProfileAddCmd() *cobra.Command {
 					}
 				}
 			}
+			// Material the new profile shape obsoletes (Codex P2s, PR #25):
+			// an oauth profile re-added WITHOUT a secret is a declaration of
+			// the recommended public client, so any stored confidential
+			// secret must go (it would be sent in the PKCE exchange and
+			// break it); likewise for basic. Checked before the save, acted
+			// on after it.
+			hadStaleSecret := false
+			if clientSecret == "" && method != config.AuthClientCredentials {
+				_, hadStaleSecret = loadClientSecret(name)
+			}
+			oldMethod := old.Auth
+			if oldMethod == "" {
+				oldMethod = config.AuthBasic
+			}
+
 			if err := f.Save(); err != nil {
 				undo()
 				return err
+			}
+
+			// Invalidate keyring state the update obsoletes. A cached token
+			// minted under rotated/removed material would keep
+			// authenticating until expiry — masking a bad new secret — so
+			// the stored token goes whenever auth material changed. An
+			// unchanged oauth profile (say, a port tweak) keeps its session.
+			var stale []error
+			if hadStaleSecret {
+				if err := deleteClientSecret(name); err != nil {
+					stale = append(stale, err)
+				}
+			}
+			if existed && (oldMethod != method || old.ClientID != clientID || old.Instance != base.String() || clientSecret != "" || hadStaleSecret) {
+				if err := deleteStoredToken(name); err != nil {
+					stale = append(stale, err)
+				}
+			}
+			if len(stale) > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: stale auth material could not be removed from the keyring: %v\n", errors.Join(stale...))
 			}
 
 			verb := "added"
@@ -201,7 +236,9 @@ func newProfileAddCmd() *cobra.Command {
 			case len(f.Profiles) >= 2 && f.Default == "":
 				fmt.Fprintf(cmd.ErrOrStderr(), "%d profiles configured — commands now require -p <name> (or set a default: glm profile use <name>)\n", len(f.Profiles))
 			}
-			if method == config.AuthOAuth {
+			if method != config.AuthBasic {
+				// login also resolves and records the acting identity (O10)
+				// — without it, previews and audits show it as unresolved.
 				fmt.Fprintf(cmd.ErrOrStderr(), "next: glm profile login %s\n", name)
 			} else {
 				fmt.Fprintf(cmd.ErrOrStderr(), "try: glm profile test %s\n", name)

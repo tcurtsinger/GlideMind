@@ -443,6 +443,92 @@ func TestProfileAddClientCredentialsStoresSecret(t *testing.T) {
 	}
 }
 
+func TestProfileAddRotationInvalidatesToken(t *testing.T) {
+	// Codex P2 (PR #25): rotating the client secret must delete the cached
+	// token — a clock-valid token minted under the old secret would keep
+	// authenticating until expiry, masking a bad rotation.
+	rec := newOAuthInstance(t)
+	fs := stubStore(t)
+	oauthProfile(t, rec, "c", config.AuthClientCredentials)
+	fs.secrets["c"] = "old-secret"
+	fs.tokens["c"] = &oauth.Token{AccessToken: "at-old", Expiry: time.Now().Add(time.Hour)}
+
+	_, _, err := execRootIn(t, "new-secret\n", "profile", "add", "c", "--instance", rec.srv.URL, "--auth", "client-credentials", "--client-id", "cid", "--client-secret-stdin")
+	if err != nil {
+		t.Fatalf("profile add: %v", err)
+	}
+	if fs.secrets["c"] != "new-secret" {
+		t.Errorf("secret must be rotated, got %v", fs.secrets)
+	}
+	if _, ok := fs.tokens["c"]; ok {
+		t.Error("the token minted under the old secret must be invalidated")
+	}
+}
+
+func TestProfileAddPublicResetClearsSecret(t *testing.T) {
+	// Codex P2 (PR #25): re-adding as public oauth WITHOUT a secret is a
+	// declaration of the recommended public client — a stored confidential
+	// secret must not linger to be sent in the PKCE exchange, and the token
+	// state minted under it goes with it.
+	rec := newOAuthInstance(t)
+	fs := stubStore(t)
+	oauthProfile(t, rec, "o", config.AuthOAuth)
+	fs.secrets["o"] = "confidential"
+	fs.tokens["o"] = &oauth.Token{AccessToken: "at", RefreshToken: "rt", Expiry: time.Now().Add(time.Hour)}
+
+	_, _, err := execRoot(t, "profile", "add", "o", "--instance", rec.srv.URL, "--auth", "oauth", "--client-id", "cid")
+	if err != nil {
+		t.Fatalf("profile add: %v", err)
+	}
+	if _, ok := fs.secrets["o"]; ok {
+		t.Error("public re-add must delete the stored client secret")
+	}
+	if _, ok := fs.tokens["o"]; ok {
+		t.Error("tokens obtained under the removed secret must be invalidated")
+	}
+}
+
+func TestProfileAddUnchangedOAuthKeepsSession(t *testing.T) {
+	// The flip side: an innocuous update (same method/client_id/instance,
+	// e.g. a port tweak) must NOT destroy the PKCE session — a refresh
+	// token cannot be re-obtained without another browser login.
+	rec := newOAuthInstance(t)
+	fs := stubStore(t)
+	oauthProfile(t, rec, "o", config.AuthOAuth)
+	fs.tokens["o"] = &oauth.Token{AccessToken: "at", RefreshToken: "rt", Expiry: time.Now().Add(time.Hour)}
+
+	_, _, err := execRoot(t, "profile", "add", "o", "--instance", rec.srv.URL, "--auth", "oauth", "--client-id", "cid", "--redirect-port", "9999")
+	if err != nil {
+		t.Fatalf("profile add: %v", err)
+	}
+	if _, ok := fs.tokens["o"]; !ok {
+		t.Error("an unchanged-material update must keep the stored session")
+	}
+}
+
+func TestUnresolvedTokenIdentityRendering(t *testing.T) {
+	// Codex P2 (PR #25): a client-credentials/oauth profile used before
+	// `profile login` has no resolved identity — the W7 preview and the
+	// audit user must say so, never render an empty (or wrong) name.
+	t.Setenv(secret.EnvToken, "")
+	res := &config.Resolved{Name: "c", Profile: config.Profile{
+		Instance: "https://x.service-now.com", Auth: config.AuthClientCredentials,
+	}}
+	if got := identityLine(res); !strings.Contains(got, "unresolved") || !strings.Contains(got, "glm profile login c") {
+		t.Errorf("identity line must name the resolver, got %q", got)
+	}
+	if got := auditUser(res); got != "(unresolved token identity)" {
+		t.Errorf("audit user = %q", got)
+	}
+	res.Profile.Username = "svc.glm"
+	if got := identityLine(res); !strings.Contains(got, "as svc.glm") {
+		t.Errorf("resolved identity renders normally, got %q", got)
+	}
+	if got := auditUser(res); got != "svc.glm" {
+		t.Errorf("audit user = %q", got)
+	}
+}
+
 func TestProfileAddOAuthValidation(t *testing.T) {
 	rec := newOAuthInstance(t)
 	stubStore(t)
