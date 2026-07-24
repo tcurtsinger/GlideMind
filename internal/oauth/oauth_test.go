@@ -334,6 +334,26 @@ func TestRefreshRejected(t *testing.T) {
 	}
 }
 
+func TestRefreshRequiresClientID(t *testing.T) {
+	// Codex P2 (PR #24): a misconfigured profile must get the corrective
+	// ConfigError before any network call — the same contract Login and
+	// ClientCredentials already honor — not a runtime auth failure from
+	// posting an empty client_id.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("token endpoint must not be contacted on misconfiguration")
+	}))
+	t.Cleanup(srv.Close)
+	cfg := Config{Endpoints: Endpoints{TokenURL: srv.URL}}
+	_, err := Refresh(context.Background(), cfg, "rt")
+	var cfgErr *ConfigError
+	if !errors.As(err, &cfgErr) {
+		t.Fatalf("want ConfigError for missing client_id, got %v", err)
+	}
+	if cfgErr.ExitCode() != exit.Usage {
+		t.Errorf("misconfiguration maps to exit %d, got %d", exit.Usage, cfgErr.ExitCode())
+	}
+}
+
 func TestTokenRequestRefusesRedirect(t *testing.T) {
 	// Codex P2 (PR #24): a redirected token request must never replay the
 	// form — code, refresh token, possibly a client secret — to the

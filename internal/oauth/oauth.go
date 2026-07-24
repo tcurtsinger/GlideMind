@@ -143,6 +143,12 @@ func (e *NetworkError) ExitCode() int { return exit.Network }
 // does not rotate refresh tokens; when the response omits one, the old
 // token is carried forward.
 func Refresh(ctx context.Context, cfg Config, refreshToken string) (*Token, error) {
+	// Misconfiguration is caught before any network call, matching Login
+	// and ClientCredentials: exit 1 with the corrective error, never a
+	// runtime auth failure from posting an empty client_id.
+	if cfg.ClientID == "" {
+		return nil, &ConfigError{Msg: "OAuth refresh needs a client_id on the profile"}
+	}
 	if refreshToken == "" {
 		return nil, &AuthError{Msg: "no refresh token stored"}
 	}
