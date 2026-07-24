@@ -168,7 +168,7 @@ func newUpdateCmd() *cobra.Command {
 					Time:     time.Now().UTC(),
 					Instance: res.Profile.Instance,
 					Profile:  res.Name,
-					User:     res.Profile.Username,
+					User:     auditUser(res),
 					Command:  "update",
 					Method:   http.MethodPatch,
 					Target:   path,

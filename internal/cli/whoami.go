@@ -29,13 +29,16 @@ func newWhoamiCmd() *cobra.Command {
 			fmt.Fprintf(out, "profile   %s (%s)\n", res.Name, res.Source)
 			fmt.Fprintf(out, "instance  %s\n", client.BaseURL())
 
-			// A bearer credential (GLM_TOKEN) may not know its own username —
-			// let the instance resolve the token's identity instead
+			// A bearer credential (GLM_TOKEN, and later OAuth) authenticates
+			// as whoever the token says — which may differ from any stored
+			// username — so identity is resolved by the instance whenever
+			// token auth is active, not only when the username is blank
 			// (DESIGN-OAUTH.md O10). Basic profiles keep the explicit query:
 			// it also verifies the configured username matches a real record.
 			username := res.Profile.Username
+			tokenIdent := username == "" || client.TokenIdentity()
 			userQuery := "user_name=" + username
-			if username == "" {
+			if tokenIdent {
 				userQuery = "sys_id=javascript:gs.getUserID()"
 			}
 			q := url.Values{}
@@ -49,7 +52,7 @@ func newWhoamiCmd() *cobra.Command {
 				return err
 			}
 			if len(users) == 0 {
-				if username == "" {
+				if tokenIdent {
 					fmt.Fprintln(out, "user      (authenticated via token, but its sys_user record is not visible)")
 				} else {
 					fmt.Fprintf(out, "user      %s (authenticated, but its sys_user record is not visible)\n", username)
@@ -57,7 +60,7 @@ func newWhoamiCmd() *cobra.Command {
 				return nil
 			}
 			u := users[0]
-			if username == "" {
+			if tokenIdent {
 				username = field(u, "user_name")
 			}
 			fmt.Fprintf(out, "user      %s (%s)\n", field(u, "user_name"), field(u, "name"))

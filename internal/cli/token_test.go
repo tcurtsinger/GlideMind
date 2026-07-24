@@ -115,6 +115,95 @@ func TestWhoamiBearerResolvesTokenIdentity(t *testing.T) {
 	}
 }
 
+func TestWhoamiBearerOverridesStoredUsername(t *testing.T) {
+	// Codex P2 (PR #23): GLM_TOKEN over a NAMED profile with a stored
+	// username must still resolve identity from the instance — the token
+	// may be minted for a different account, and whoami falsely confirming
+	// the stored name defeats the sanity check it exists for.
+	var userQuery, roleQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/now/table/sys_user":
+			userQuery = r.URL.Query().Get("sysparm_query")
+			w.Write([]byte(`{"result":[{"user_name":"actual","name":"Actual User","email":"","title":""}]}`)) //nolint:errcheck
+		case "/api/now/table/sys_user_has_role":
+			roleQuery = r.URL.Query().Get("sysparm_query")
+			w.Write([]byte(`{"result":[]}`)) //nolint:errcheck
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pointConfigAt(t)
+	writeConfig(t, &config.File{Profiles: map[string]config.Profile{
+		"p": {Instance: srv.URL, Auth: "basic", Username: "stored"},
+	}})
+	t.Setenv(secret.EnvToken, "tok-5")
+
+	stdout, _, err := execRoot(t, "-p", "p", "whoami")
+	if err != nil {
+		t.Fatalf("whoami: %v", err)
+	}
+	if userQuery != "sys_id=javascript:gs.getUserID()" {
+		t.Errorf("token auth must resolve identity from the instance even with a stored username, queried %q", userQuery)
+	}
+	if !strings.Contains(roleQuery, "user.user_name=actual") {
+		t.Errorf("roles must use the token's resolved user, queried %q", roleQuery)
+	}
+	if !strings.Contains(stdout, "user      actual (Actual User)") || strings.Contains(stdout, "stored") {
+		t.Errorf("whoami must report the token's user, never the stored one, got:\n%s", stdout)
+	}
+}
+
+func TestProfileTestBearerResolvesIdentity(t *testing.T) {
+	var userQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		userQuery = r.URL.Query().Get("sysparm_query")
+		w.Write([]byte(`{"result":[{"sys_id":"abc","user_name":"actual"}]}`)) //nolint:errcheck
+	}))
+	t.Cleanup(srv.Close)
+	pointConfigAt(t)
+	writeConfig(t, &config.File{Profiles: map[string]config.Profile{
+		"p": {Instance: srv.URL, Auth: "basic", Username: "stored"},
+	}})
+	t.Setenv(secret.EnvToken, "tok-6")
+
+	stdout, _, err := execRoot(t, "profile", "test", "p")
+	if err != nil {
+		t.Fatalf("profile test: %v", err)
+	}
+	if userQuery != "sys_id=javascript:gs.getUserID()" {
+		t.Errorf("token auth must resolve identity from the instance, queried %q", userQuery)
+	}
+	if !strings.Contains(stdout, "as actual") || strings.Contains(stdout, "stored") {
+		t.Errorf("profile test must report the token's user, never the stored one, got %q", stdout)
+	}
+}
+
+func TestIdentityLineAndAuditUserUnderToken(t *testing.T) {
+	// W7/W6: under GLM_TOKEN the stored username is not who a write runs
+	// as — neither the preview nor the audit trail may claim it.
+	res := &config.Resolved{Name: "p", Profile: config.Profile{
+		Instance: "https://x.service-now.com", Username: "stored",
+	}}
+	t.Setenv(secret.EnvToken, "")
+	if got := identityLine(res); !strings.Contains(got, "stored") {
+		t.Errorf("basic identity line should name the stored username, got %q", got)
+	}
+	if got := auditUser(res); got != "stored" {
+		t.Errorf("basic audit user = %q, want %q", got, "stored")
+	}
+	t.Setenv(secret.EnvToken, "tok")
+	if got := identityLine(res); strings.Contains(got, "stored") || !strings.Contains(got, "GLM_TOKEN") {
+		t.Errorf("token identity line must not claim the stored username, got %q", got)
+	}
+	if got := auditUser(res); strings.Contains(got, "stored") || !strings.Contains(got, "GLM_TOKEN") {
+		t.Errorf("token audit user must not claim the stored username, got %q", got)
+	}
+}
+
 func TestGlmTokenEnvProfileStaysReadOnly(t *testing.T) {
 	// W1 is untouched by the credential: the synthetic env profile is
 	// read-only no matter how it authenticates.

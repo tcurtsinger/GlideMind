@@ -224,6 +224,15 @@ func (c *Client) BaseURL() string { return c.base.String() }
 // instance metadata (dictionary rows) is ACL-filtered per user.
 func (c *Client) Username() string { return c.username }
 
+// TokenIdentity reports whether the client's identity comes from a token
+// rather than a configured username+password. Identity checks (whoami,
+// profile test) must then ask the instance who the token is — a stored
+// username may not match the credential actually in use.
+func (c *Client) TokenIdentity() bool {
+	_, basic := c.auth.(basicAuth)
+	return !basic
+}
+
 // GetJSON performs a GET with bounded retries on 429/503 (honoring
 // Retry-After) and decodes the JSON response into out (which may be nil).
 func (c *Client) GetJSON(ctx context.Context, path string, query url.Values, out any) error {

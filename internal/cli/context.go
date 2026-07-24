@@ -66,9 +66,27 @@ func requireWritable(res *config.Resolved) error {
 
 // identityLine renders the acting identity for a write preview (W7): who the
 // write runs as, where, and through which profile — a write must never land
-// under an unexpected identity or instance.
+// under an unexpected identity or instance. Under GLM_TOKEN the stored
+// username is NOT who the write runs as — the token's identity is — and W7
+// must never name the wrong account, so the line says what it truly knows
+// and points at the check.
 func identityLine(res *config.Resolved) string {
-	return output.SanitizeLine(fmt.Sprintf("as %s @ %s (profile %s)", res.Profile.Username, strings.TrimPrefix(res.Profile.Instance, "https://"), res.Name))
+	who := res.Profile.Username
+	if secret.Token() != "" {
+		who = "the GLM_TOKEN bearer (verify: glm whoami)"
+	}
+	return output.SanitizeLine(fmt.Sprintf("as %s @ %s (profile %s)", who, strings.TrimPrefix(res.Profile.Instance, "https://"), res.Name))
+}
+
+// auditUser is the identity stamped into audit entries (W6). Under GLM_TOKEN
+// the stored username is not who the write ran as — a wrong name in the
+// audit trail is worse than an honest unknown, and the instance's own
+// sys_audit holds the authoritative identity.
+func auditUser(res *config.Resolved) string {
+	if secret.Token() != "" {
+		return "(GLM_TOKEN bearer)"
+	}
+	return res.Profile.Username
 }
 
 // clientForResolved builds an authenticated client for an already-resolved
