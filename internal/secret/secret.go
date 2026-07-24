@@ -17,7 +17,17 @@ const (
 
 	// EnvPassword overrides the keyring lookup for every profile.
 	EnvPassword = "GLM_PASSWORD"
+
+	// EnvToken supplies a static bearer token (DESIGN-OAUTH.md O8). Set, it
+	// overrides the keyring AND EnvPassword for any profile — the profile
+	// picks the instance, env may supply the credential, and a token is the
+	// more specific claim. Headless/CI use; never renewed: when it expires
+	// the 401 surfaces (exit 2) and the environment re-mints.
+	EnvToken = "GLM_TOKEN"
 )
+
+// Token returns the GLM_TOKEN bearer credential, or "" when unset.
+func Token() string { return os.Getenv(EnvToken) }
 
 // Get returns the credential for a profile: GLM_PASSWORD if set, else the
 // OS keyring entry.

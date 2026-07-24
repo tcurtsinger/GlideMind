@@ -74,13 +74,33 @@ func identityLine(res *config.Resolved) string {
 // clientForResolved builds an authenticated client for an already-resolved
 // profile (credential lookup happens here).
 func clientForResolved(cmd *cobra.Command, res *config.Resolved) (*snow.Client, error) {
-	password, err := secret.Get(res.Name)
-	if err != nil {
-		return nil, err
-	}
-
 	timeout, _ := cmd.Flags().GetDuration("timeout")
-	client, err := snow.NewBasic(res.Profile.Instance, res.Profile.Username, password, timeout)
+
+	var client *snow.Client
+	var err error
+	if token := secret.Token(); token != "" {
+		// GLM_TOKEN supplies a static bearer for ANY profile — the same
+		// precedence GLM_PASSWORD established (the profile picks the
+		// instance, env may supply the credential), beating GLM_PASSWORD
+		// when both are set (DESIGN-OAUTH.md O8, Resolution 2). The schema
+		// cache is keyed per user (dictionary reads are ACL-filtered); a
+		// bearer may not know its identity, so GLM_USERNAME (already folded
+		// into the profile by config.Resolve) names it, else a stable
+		// pseudo-user keys the cache — fine for the one-identity-per-
+		// environment CI norm.
+		username := res.Profile.Username
+		if username == "" {
+			username = "token"
+		}
+		client, err = snow.NewBearer(res.Profile.Instance, token, username, timeout)
+	} else {
+		var password string
+		password, err = secret.Get(res.Name)
+		if err != nil {
+			return nil, err
+		}
+		client, err = snow.NewBasic(res.Profile.Instance, res.Profile.Username, password, timeout)
+	}
 	if err != nil {
 		return nil, err
 	}

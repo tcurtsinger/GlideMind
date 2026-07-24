@@ -313,8 +313,16 @@ func newProfileTestCmd() *cobra.Command {
 				return err
 			}
 
+			// Mirrors whoami: a bearer credential (GLM_TOKEN) may not know
+			// its username, so the instance resolves the token's identity.
+			identity := res.Profile.Username
+			userQuery := "user_name=" + identity
+			if identity == "" {
+				userQuery = "sys_id=javascript:gs.getUserID()"
+				identity = "(token)"
+			}
 			q := url.Values{}
-			q.Set("sysparm_query", "user_name="+res.Profile.Username)
+			q.Set("sysparm_query", userQuery)
 			q.Set("sysparm_fields", "sys_id")
 			q.Set("sysparm_limit", "1")
 			start := time.Now()
@@ -322,7 +330,7 @@ func newProfileTestCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "ok — %s as %s (%dms)\n",
-				client.BaseURL(), res.Profile.Username, time.Since(start).Milliseconds())
+				client.BaseURL(), identity, time.Since(start).Milliseconds())
 			return nil
 		},
 	}

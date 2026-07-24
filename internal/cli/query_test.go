@@ -309,6 +309,10 @@ func isolateConfig(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("APPDATA", dir)
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	// A stray GLM_TOKEN in the developer's shell would silently flip every
+	// test to bearer auth (it overrides GLM_PASSWORD) — isolate it with the
+	// config. Bearer tests set it themselves after this owner-guarded clear.
+	t.Setenv(secret.EnvToken, "")
 	t.Setenv("GLM_TEST_CONF_OWNER", t.Name())
 }
 

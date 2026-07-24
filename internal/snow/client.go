@@ -30,15 +30,46 @@ const (
 // sysparm_display_value mode requested by the caller.
 type Record = map[string]any
 
-// Client talks to one instance with basic auth (v1; OAuth client-credentials
-// is a planned follow-up).
+// Client talks to one instance. Credentials are injected per request by an
+// authenticator — basic auth or a static bearer token today; the refreshing
+// OAuth implementations arrive with DESIGN-OAUTH.md's later phases.
 type Client struct {
 	base     *url.URL
 	hc       *http.Client
 	username string
-	password string
+	auth     authenticator
 	logf     func(format string, args ...any)
 }
+
+// authenticator injects credentials into outgoing requests (DESIGN-OAUTH.md
+// O7). apply sets the Authorization material on one request. retryAuth is
+// consulted at most once per call after an HTTP 401: an implementation that
+// can renew its credential does so and returns true to trigger a single
+// retry; static credentials return false so the 401 surfaces immediately.
+// A 401 is rejected before the instance processes the request, so the one
+// retry never violates the write path's send-once contract.
+type authenticator interface {
+	apply(req *http.Request) error
+	retryAuth(ctx context.Context) bool
+}
+
+type basicAuth struct{ username, password string }
+
+func (a basicAuth) apply(req *http.Request) error {
+	req.SetBasicAuth(a.username, a.password)
+	return nil
+}
+
+func (a basicAuth) retryAuth(context.Context) bool { return false }
+
+type bearerAuth struct{ token string }
+
+func (a bearerAuth) apply(req *http.Request) error {
+	req.Header.Set("Authorization", "Bearer "+a.token)
+	return nil
+}
+
+func (a bearerAuth) retryAuth(context.Context) bool { return false }
 
 // NormalizeInstance turns "acme", "acme.service-now.com", or a full URL into
 // a base URL.
@@ -110,7 +141,34 @@ func NewBasic(instance, username, password string, timeout time.Duration) (*Clie
 		base:     u,
 		hc:       &http.Client{Timeout: timeout, CheckRedirect: secureRedirect},
 		username: username,
-		password: password,
+		auth:     basicAuth{username: username, password: password},
+	}, nil
+}
+
+// NewBearer builds a client that authenticates with a static bearer token
+// (GLM_TOKEN — DESIGN-OAUTH.md O8). The token is never renewed: when it
+// expires, the 401 surfaces (exit 2) and the environment re-mints. username
+// names the identity for the per-user schema cache; callers pass their best
+// knowledge (GLM_USERNAME) or a stable pseudo-identity, never "".
+func NewBearer(instance, token, username string, timeout time.Duration) (*Client, error) {
+	u, err := NormalizeInstance(instance)
+	if err != nil {
+		return nil, err
+	}
+	if token == "" {
+		return nil, fmt.Errorf("bearer token is empty")
+	}
+	if username == "" {
+		return nil, fmt.Errorf("username is empty — bearer clients must name an identity for the per-user cache")
+	}
+	if timeout <= 0 {
+		return nil, fmt.Errorf("timeout must be positive, got %s", timeout)
+	}
+	return &Client{
+		base:     u,
+		hc:       &http.Client{Timeout: timeout, CheckRedirect: secureRedirect},
+		username: username,
+		auth:     bearerAuth{token: token},
 	}, nil
 }
 
@@ -179,12 +237,15 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out
 	u.Path += path
 	u.RawQuery = query.Encode()
 
+	renewed := false
 	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
 		}
-		req.SetBasicAuth(c.username, c.password)
+		if err := c.auth.apply(req); err != nil {
+			return nil, err
+		}
 		req.Header.Set("Accept", "application/json")
 
 		c.log("GET %s (attempt %d/%d)", u.Redacted(), attempt, maxAttempts)
@@ -193,6 +254,10 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out
 			return nil, &NetworkError{Err: err}
 		}
 
+		if c.renewOn401(ctx, resp, &renewed) {
+			c.log("HTTP 401, retrying with renewed credentials")
+			continue
+		}
 		if wait, ok := retryAfter(resp, attempt); ok {
 			c.log("HTTP %d, retrying in %s", resp.StatusCode, wait)
 			select {
@@ -204,6 +269,20 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out
 		}
 		return resp.Header, decodeResponse(resp, out)
 	}
+}
+
+// renewOn401 reports whether a 401 response should be retried: the
+// authenticator renewed its credential and this call has not yet spent its
+// single renewal. On true the response body is drained so the retry can
+// reuse the connection.
+func (c *Client) renewOn401(ctx context.Context, resp *http.Response, renewed *bool) bool {
+	if resp.StatusCode != http.StatusUnauthorized || *renewed || !c.auth.retryAuth(ctx) {
+		return false
+	}
+	*renewed = true
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+	return true
 }
 
 // retryAfter reports whether the response is retryable (429/503) within the
@@ -223,13 +302,16 @@ func retryAfter(resp *http.Response, attempt int) (time.Duration, bool) {
 // (HTTP 204). Automatic 429/503 retries apply to GET only: a 503 can arrive
 // after the instance already applied a write, so a non-GET request goes on
 // the wire exactly once — matching the single request the --yes preview
-// showed.
+// showed. The one exception is a 401 with a renewable credential: a 401 is
+// rejected before the instance processes the request, so the single renewed
+// retry keeps the effectively-once contract.
 func (c *Client) Raw(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, error) {
 	u, err := c.rawURL(path, query)
 	if err != nil {
 		return nil, err
 	}
 
+	renewed := false
 	for attempt := 1; ; attempt++ {
 		var rdr io.Reader
 		if len(body) > 0 {
@@ -239,7 +321,9 @@ func (c *Client) Raw(ctx context.Context, method, path string, query url.Values,
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
 		}
-		req.SetBasicAuth(c.username, c.password)
+		if err := c.auth.apply(req); err != nil {
+			return nil, err
+		}
 		req.Header.Set("Accept", "application/json")
 		if len(body) > 0 {
 			req.Header.Set("Content-Type", "application/json")
@@ -249,6 +333,10 @@ func (c *Client) Raw(ctx context.Context, method, path string, query url.Values,
 		resp, err := c.hc.Do(req)
 		if err != nil {
 			return nil, &NetworkError{Err: err}
+		}
+		if c.renewOn401(ctx, resp, &renewed) {
+			c.log("HTTP 401, retrying with renewed credentials")
+			continue
 		}
 		if method == http.MethodGet {
 			if wait, ok := retryAfter(resp, attempt); ok {
@@ -344,17 +432,24 @@ func (c *Client) DownloadAttachment(ctx context.Context, sysID string, w io.Writ
 	u := *c.base
 	u.Path += "/api/now/attachment/" + url.PathEscape(sysID) + "/file"
 
+	renewed := false
 	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 		if err != nil {
 			return 0, fmt.Errorf("build request: %w", err)
 		}
-		req.SetBasicAuth(c.username, c.password)
+		if err := c.auth.apply(req); err != nil {
+			return 0, err
+		}
 
 		c.log("GET %s (attempt %d/%d)", u.Redacted(), attempt, maxAttempts)
 		resp, err := c.hc.Do(req)
 		if err != nil {
 			return 0, &NetworkError{Err: err}
+		}
+		if c.renewOn401(ctx, resp, &renewed) {
+			c.log("HTTP 401, retrying with renewed credentials")
+			continue
 		}
 		if wait, ok := retryAfter(resp, attempt); ok {
 			c.log("HTTP %d, retrying in %s", resp.StatusCode, wait)

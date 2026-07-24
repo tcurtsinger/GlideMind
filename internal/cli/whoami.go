@@ -29,8 +29,17 @@ func newWhoamiCmd() *cobra.Command {
 			fmt.Fprintf(out, "profile   %s (%s)\n", res.Name, res.Source)
 			fmt.Fprintf(out, "instance  %s\n", client.BaseURL())
 
+			// A bearer credential (GLM_TOKEN) may not know its own username —
+			// let the instance resolve the token's identity instead
+			// (DESIGN-OAUTH.md O10). Basic profiles keep the explicit query:
+			// it also verifies the configured username matches a real record.
+			username := res.Profile.Username
+			userQuery := "user_name=" + username
+			if username == "" {
+				userQuery = "sys_id=javascript:gs.getUserID()"
+			}
 			q := url.Values{}
-			q.Set("sysparm_query", "user_name="+res.Profile.Username)
+			q.Set("sysparm_query", userQuery)
 			q.Set("sysparm_fields", "user_name,name,email,title")
 			q.Set("sysparm_limit", "1")
 			q.Set("sysparm_display_value", "true")
@@ -40,10 +49,17 @@ func newWhoamiCmd() *cobra.Command {
 				return err
 			}
 			if len(users) == 0 {
-				fmt.Fprintf(out, "user      %s (authenticated, but its sys_user record is not visible)\n", res.Profile.Username)
+				if username == "" {
+					fmt.Fprintln(out, "user      (authenticated via token, but its sys_user record is not visible)")
+				} else {
+					fmt.Fprintf(out, "user      %s (authenticated, but its sys_user record is not visible)\n", username)
+				}
 				return nil
 			}
 			u := users[0]
+			if username == "" {
+				username = field(u, "user_name")
+			}
 			fmt.Fprintf(out, "user      %s (%s)\n", field(u, "user_name"), field(u, "name"))
 			if email := field(u, "email"); email != "" {
 				fmt.Fprintf(out, "email     %s\n", email)
@@ -59,7 +75,7 @@ func newWhoamiCmd() *cobra.Command {
 			names := map[string]bool{}
 			for offset := 0; ; offset += rolePage {
 				rq := url.Values{}
-				rq.Set("sysparm_query", "user.user_name="+res.Profile.Username+"^ORDERBYsys_id")
+				rq.Set("sysparm_query", "user.user_name="+username+"^ORDERBYsys_id")
 				rq.Set("sysparm_fields", "role.name")
 				rq.Set("sysparm_limit", strconv.Itoa(rolePage))
 				rq.Set("sysparm_offset", strconv.Itoa(offset))
