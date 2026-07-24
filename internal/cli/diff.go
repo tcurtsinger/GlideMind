@@ -48,6 +48,22 @@ func newDiffCmd() *cobra.Command {
 				return fmt.Errorf("both -p flags name %q — diff compares two different instances", nameA)
 			}
 
+			format, _, err := resolveFormat(cmd)
+			if err != nil {
+				return err
+			}
+			// ids emits sys_ids for chaining; a diff row is a field comparison
+			// with no sys_id, so the ids renderer would error — and only when
+			// rows exist, which would make the presence of differences change
+			// the exit code (I5: differences are data, exit 0). Reject it up
+			// front instead, before any network call, so the outcome never
+			// depends on whether the two sides differ.
+			if format == "ids" {
+				return fmt.Errorf("--format ids is not meaningful for diff (rows are field comparisons, not records) — use table, csv, tsv, or json")
+			}
+			opts := output.Options{Format: format, Full: full}
+			table := args[0]
+
 			// Each profile resolves and stamps independently (I3), so the
 			// transcript names both instances the diff touched.
 			clientA, _, err := clientFor(cmd, nameA)
@@ -58,13 +74,6 @@ func newDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			format, _, err := resolveFormat(cmd)
-			if err != nil {
-				return err
-			}
-			opts := output.Options{Format: format, Full: full}
-			table := args[0]
 
 			if len(args) == 2 {
 				return diffRecord(cmd, clientA, clientB, nameA, nameB, table, args[1], splitFields(fieldsArg), opts)

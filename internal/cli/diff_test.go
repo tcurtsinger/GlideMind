@@ -112,6 +112,24 @@ func TestDiffFlagCount(t *testing.T) {
 	}
 }
 
+// TestDiffRejectsIdsFormat: --format ids is rejected up front, so the outcome
+// is the same whether or not the two sides differ (Codex review). Routing diff
+// rows through the ids renderer would error only when rows exist, letting the
+// presence of differences change the exit code (I5: differences are data).
+func TestDiffRejectsIdsFormat(t *testing.T) {
+	same := map[string]any{"sys_id": sysIDa, "state": "1"}
+	differ := map[string]any{"sys_id": sysIDa, "state": "9"}
+	for _, recB := range []map[string]any{same, differ} {
+		srvA := diffServer(t, "widget", diffFake{record: same})
+		srvB := diffServer(t, "widget", diffFake{record: recB})
+		twoProfiles(t, srvA, srvB)
+		_, _, err := runGlmErr(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b", "--format", "ids")
+		if err == nil || !strings.Contains(err.Error(), "ids is not meaningful") {
+			t.Errorf("--format ids must be rejected regardless of differences, got: %v", err)
+		}
+	}
+}
+
 // TestDiffRecordDifferences: only differing fields are shown; equal fields and
 // sys_id (the cross-instance key, not a data field) are omitted.
 func TestDiffRecordDifferences(t *testing.T) {
