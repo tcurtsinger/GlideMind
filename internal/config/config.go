@@ -23,11 +23,25 @@ const (
 // built entirely from GLM_* env vars (containers, CI).
 const EnvProfileName = "env"
 
+// Auth method values a profile may store (DESIGN-OAUTH.md O2).
+const (
+	AuthBasic             = "basic"
+	AuthOAuth             = "oauth"              // interactive PKCE, acting-as-self
+	AuthClientCredentials = "client_credentials" // non-interactive, designated user
+)
+
 // Profile is one named instance connection.
 type Profile struct {
 	Instance string `toml:"instance"`
-	Auth     string `toml:"auth,omitempty"` // "basic" (default); more methods later
+	Auth     string `toml:"auth,omitempty"` // AuthBasic (default), AuthOAuth, AuthClientCredentials
 	Username string `toml:"username,omitempty"`
+	// ClientID is the instance's Application Registry client id — public
+	// by definition, so it lives in config, not the keyring (O2). Secrets
+	// (client secret, tokens) never appear here.
+	ClientID string `toml:"client_id,omitempty"`
+	// RedirectPort overrides the fixed OAuth callback port (O4) when 8456
+	// is taken or the registry entry was registered differently.
+	RedirectPort int `toml:"redirect_port,omitempty"`
 	// Writable gates writes (DESIGN-WRITES.md W1): a profile writes nothing
 	// until this is set — deliberately, via `glm profile write-enable` or
 	// `profile add --writable`. There is no env override: flipping write
@@ -207,8 +221,11 @@ func Resolve(flagName string) (*Resolved, error) {
 	}
 	// Credentials are env-overridable even for named profiles: the profile
 	// picks the instance, GLM_USERNAME/GLM_PASSWORD may supply who — the
-	// same rule the secret package applies to passwords.
-	if u := os.Getenv(EnvUsername); u != "" {
+	// same rule the secret package applies to passwords. BASIC auth only:
+	// a token-auth profile's identity is the token's, resolved and stored
+	// by `glm profile login` — GLM_USERNAME there is an unverified claim
+	// that could misattribute previews, audits, and the per-user cache.
+	if u := os.Getenv(EnvUsername); u != "" && (p.Auth == "" || p.Auth == AuthBasic) {
 		p.Username = u
 	}
 	return &Resolved{Name: name, Source: source, Profile: p, Multi: len(f.Profiles) >= 2}, nil

@@ -45,10 +45,13 @@ func resolveProfile(cmd *cobra.Command, flagName string) (*config.Resolved, erro
 	// The auth-method check exists to fail fast when glm cannot build a
 	// credential for the stored method. A GLM_TOKEN bearer displaces the
 	// profile's method entirely (Resolution 2: token overrides ANY profile),
-	// so a staged oauth/client_credentials profile — or any future method —
-	// stays usable under a token while its own phase is still unshipped.
-	if res.Profile.Auth != "" && res.Profile.Auth != "basic" && secret.Token() == "" {
-		return nil, fmt.Errorf("profile %q: auth method %q is not supported yet (v1 supports: basic, or a GLM_TOKEN bearer)", res.Name, res.Profile.Auth)
+	// so an unknown/future method stays usable under a token.
+	switch res.Profile.Auth {
+	case "", config.AuthBasic, config.AuthOAuth, config.AuthClientCredentials:
+	default:
+		if secret.Token() == "" {
+			return nil, fmt.Errorf("profile %q: auth method %q is not supported (supported: basic, oauth, client_credentials — or a GLM_TOKEN bearer)", res.Name, res.Profile.Auth)
+		}
 	}
 	return res, nil
 }
@@ -80,8 +83,14 @@ func requireWritable(res *config.Resolved) error {
 // and points at the check.
 func identityLine(res *config.Resolved) string {
 	who := res.Profile.Username
-	if secret.Token() != "" {
+	switch {
+	case secret.Token() != "":
 		who = "the GLM_TOKEN bearer (verify: glm whoami)"
+	case who == "" && res.Profile.Auth != "" && res.Profile.Auth != config.AuthBasic:
+		// A token-auth profile that has never been through `profile login`
+		// has no resolved identity — W7 says what it knows and names the
+		// resolver rather than rendering an empty (or wrong) name.
+		who = fmt.Sprintf("this profile's token identity (unresolved — run: glm profile login %s)", res.Name)
 	}
 	return output.SanitizeLine(fmt.Sprintf("as %s @ %s (profile %s)", who, strings.TrimPrefix(res.Profile.Instance, "https://"), res.Name))
 }
@@ -109,6 +118,11 @@ func auditUser(res *config.Resolved) string {
 	if secret.Token() != "" {
 		return "(GLM_TOKEN bearer)"
 	}
+	if res.Profile.Username == "" && res.Profile.Auth != "" && res.Profile.Auth != config.AuthBasic {
+		// Same honesty as identityLine: never stamp an empty user for a
+		// token-auth profile whose identity was never resolved.
+		return "(unresolved token identity)"
+	}
 	return res.Profile.Username
 }
 
@@ -117,15 +131,54 @@ func auditUser(res *config.Resolved) string {
 func clientForResolved(cmd *cobra.Command, res *config.Resolved) (*snow.Client, error) {
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 
+	// Method resolution (DESIGN-OAUTH.md O8): GLM_TOKEN displaces
+	// everything; the synthetic env profile infers client-credentials from
+	// GLM_CLIENT_ID+GLM_CLIENT_SECRET (env vars never change a NAMED
+	// profile's method — only GLM_TOKEN carries method+credential).
+	method := res.Profile.Auth
+	if method == "" {
+		method = config.AuthBasic
+	}
+	if res.Name == config.EnvProfileName && secret.ClientID() != "" && secret.ClientSecret() != "" {
+		method = config.AuthClientCredentials
+	}
+
 	var client *snow.Client
 	var err error
-	if token := secret.Token(); token != "" {
-		// GLM_TOKEN supplies a static bearer for ANY profile — the same
-		// precedence GLM_PASSWORD established (the profile picks the
-		// instance, env may supply the credential), beating GLM_PASSWORD
-		// when both are set (DESIGN-OAUTH.md O8, Resolution 2).
-		client, err = snow.NewBearer(res.Profile.Instance, token, bearerIdentity(token), timeout)
-	} else {
+	switch {
+	case secret.Token() != "":
+		// A static bearer for ANY profile — the precedence GLM_PASSWORD
+		// established, beating GLM_PASSWORD when both are set (Resolution 2).
+		client, err = snow.NewBearer(res.Profile.Instance, secret.Token(), bearerIdentity(secret.Token()), timeout)
+	case method == config.AuthOAuth:
+		cfg, cerr := oauthConfigFor(res)
+		if cerr != nil {
+			return nil, cerr
+		}
+		if cfg.ClientID == "" {
+			return nil, fmt.Errorf("profile %q has no client_id — set it with `glm profile add %s --instance %s --auth oauth --client-id <id>`", res.Name, res.Name, res.Profile.Instance)
+		}
+		username := res.Profile.Username
+		if username == "" {
+			// `profile login` stores the real username (O10); before the
+			// first login a stable per-profile identity keys the cache.
+			username = "oauth-" + res.Name
+		}
+		client, err = snow.NewTokenAuth(res.Profile.Instance, newOAuthSource(res, cfg), username, timeout)
+	case method == config.AuthClientCredentials:
+		cfg, cerr := oauthConfigFor(res)
+		if cerr != nil {
+			return nil, cerr
+		}
+		if cfg.ClientID == "" || cfg.ClientSecret == "" {
+			return nil, fmt.Errorf("profile %q needs a client_id and a client secret for client-credentials — store them with `glm profile add %s --instance %s --auth client-credentials --client-id <id> --client-secret-stdin`, or set %s/%s", res.Name, res.Name, res.Profile.Instance, secret.EnvClientID, secret.EnvClientSecret)
+		}
+		username := res.Profile.Username
+		if username == "" {
+			username = "cc-" + res.Name
+		}
+		client, err = snow.NewTokenAuth(res.Profile.Instance, newCCSource(res, cfg), username, timeout)
+	default:
 		var password string
 		password, err = secret.Get(res.Name)
 		if err != nil {

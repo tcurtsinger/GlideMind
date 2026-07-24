@@ -26,13 +26,23 @@ func (a *rotatingAuth) apply(req *http.Request) error {
 	return nil
 }
 
-func (a *rotatingAuth) retryAuth(context.Context) bool {
+func (a *rotatingAuth) retryAuth(context.Context) (bool, error) {
 	a.renews++
 	if a.idx+1 < len(a.tokens) {
 		a.idx++
 	}
-	return true
+	return true, nil
 }
+
+// failingAuth attempts renewal and fails — the revoked-session shape.
+type failingAuth struct{ err error }
+
+func (a failingAuth) apply(req *http.Request) error {
+	req.Header.Set("Authorization", "Bearer revoked")
+	return nil
+}
+
+func (a failingAuth) retryAuth(context.Context) (bool, error) { return false, a.err }
 
 // newAuthClient builds a client around an injected authenticator — the seam
 // PR 2's OAuth implementations plug into.
@@ -152,6 +162,30 @@ func TestRenewOn401IsSpentAfterOneRetry(t *testing.T) {
 	}
 	if hits != 2 {
 		t.Errorf("want exactly 2 attempts (original + one renewed retry), got %d", hits)
+	}
+}
+
+func TestRenewalErrorReplacesRaw401(t *testing.T) {
+	// Codex P2 (PR #25): when renewal is attempted and FAILS, that error —
+	// which names the remedy — must replace the raw 401, not be collapsed
+	// into "not renewable".
+	hits := 0
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	remedy := errors.New(`OAuth session expired — run: glm profile login p`)
+	c := newAuthClient(t, handler, failingAuth{err: remedy})
+	err := c.GetJSON(context.Background(), "/api/now/table/x", nil, nil)
+	if !errors.Is(err, remedy) {
+		t.Fatalf("want the renewal error surfaced, got %v", err)
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		t.Error("the raw 401 must be replaced by the actionable renewal error")
+	}
+	if hits != 1 {
+		t.Errorf("no retry after a failed renewal, got %d attempts", hits)
 	}
 }
 

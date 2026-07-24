@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -12,6 +14,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/tcurtsinger/GlideMind/internal/config"
+	"github.com/tcurtsinger/GlideMind/internal/oauth"
 	"github.com/tcurtsinger/GlideMind/internal/secret"
 	"github.com/tcurtsinger/GlideMind/internal/snow"
 )
@@ -27,6 +30,8 @@ func newProfileCmd() *cobra.Command {
 		newProfileUseCmd(),
 		newProfileTestCmd(),
 		newProfileRemoveCmd(),
+		newProfileLoginCmd(),
+		newProfileLogoutCmd(),
 		newProfileWritableCmd("write-enable", true),
 		newProfileWritableCmd("write-disable", false),
 	)
@@ -70,25 +75,56 @@ func newProfileWritableCmd(name string, enable bool) *cobra.Command {
 }
 
 func newProfileAddCmd() *cobra.Command {
-	var instance, username string
-	var passwordStdin, writable bool
+	var instance, username, auth, clientID string
+	var passwordStdin, clientSecretStdin, writable bool
+	var redirectPort int
 
 	cmd := &cobra.Command{
 		Use:   "add <name>",
-		Short: "Add or update a profile and store its password in the keyring",
+		Short: "Add or update a profile (secrets go to the OS keyring)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			if name == config.EnvProfileName {
 				return fmt.Errorf("%q is reserved for the GLM_INSTANCE env profile", name)
 			}
+			// The CLI accepts the hyphenated spelling; config stores the
+			// token-endpoint grant name (DESIGN-OAUTH.md O2).
+			method := strings.ReplaceAll(auth, "-", "_")
+			switch method {
+			case config.AuthBasic, config.AuthOAuth, config.AuthClientCredentials:
+			default:
+				return fmt.Errorf("unknown --auth %q (supported: basic, oauth, client-credentials)", auth)
+			}
 
 			base, err := snow.NormalizeInstance(instance)
 			if err != nil {
 				return err
 			}
+			if method == config.AuthBasic && username == "" {
+				return fmt.Errorf("--username is required for basic auth")
+			}
+			if method != config.AuthBasic && clientID == "" {
+				return fmt.Errorf("--client-id is required for --auth %s (from the instance's Application Registry entry)", auth)
+			}
+			if method != config.AuthBasic && username != "" {
+				// A token-auth identity is the token's, not a claim: it is
+				// resolved and stored by `profile login` (O10). Accepting a
+				// claimed name here could misattribute previews and audits.
+				return fmt.Errorf("--username does not apply to --auth %s — the identity is resolved and stored by `glm profile login %s`", auth, name)
+			}
 
-			password, err := readPassword(cmd, passwordStdin)
+			// Secret material, gathered before any state changes. Basic
+			// needs a password; client-credentials always needs the client
+			// secret; an oauth profile only when its registry entry is
+			// confidential (O9) — the recommended public client stores none.
+			var password, clientSecret string
+			switch {
+			case method == config.AuthBasic:
+				password, err = readSecret(cmd, passwordStdin, "password")
+			case method == config.AuthClientCredentials || clientSecretStdin:
+				clientSecret, err = readSecret(cmd, clientSecretStdin, "client secret")
+			}
 			if err != nil {
 				return err
 			}
@@ -99,11 +135,37 @@ func newProfileAddCmd() *cobra.Command {
 			}
 			old, existed := f.Profiles[name]
 			keepWritable := preserveWritable(old, existed, cmd.Flags().Changed("writable"), writable)
+			oldMethod := old.Auth
+			if oldMethod == "" {
+				oldMethod = config.AuthBasic
+			}
+			// An oauth profile re-added WITHOUT a secret is a declaration of
+			// the recommended public client, so any stored confidential
+			// secret must go (it would be sent in the PKCE exchange and
+			// break it); likewise when leaving client-credentials. Checked
+			// here, acted on after the save.
+			hadStaleSecret := false
+			if clientSecret == "" && method != config.AuthClientCredentials {
+				_, hadStaleSecret = loadClientSecret(name)
+			}
+			// materialChanged: the stored auth material no longer matches
+			// what any cached token — or resolved identity — was obtained
+			// under.
+			materialChanged := existed && (oldMethod != method || old.ClientID != clientID || old.Instance != base.String() || clientSecret != "" || hadStaleSecret)
+			if method != config.AuthBasic && existed && !materialChanged {
+				// A token-auth username is set ONLY by `profile login` (it
+				// resolves the real identity, O10). An update that keeps the
+				// stored session keeps the resolved identity with it — the
+				// empty --username default must not wipe it to unresolved.
+				username = old.Username
+			}
 			f.Profiles[name] = config.Profile{
-				Instance: base.String(),
-				Auth:     "basic",
-				Username: username,
-				Writable: keepWritable,
+				Instance:     base.String(),
+				Auth:         method,
+				Username:     username,
+				ClientID:     clientID,
+				RedirectPort: redirectPort,
+				Writable:     keepWritable,
 			}
 			// Deliberately no auto-default: with one profile it is implicit
 			// anyway, and a sticky default armed here would silently route
@@ -111,22 +173,68 @@ func newProfileAddCmd() *cobra.Command {
 			// exists — the wrong-instance leak DESIGN-INSTANCES.md I1 closes.
 			// A default is only ever set explicitly via `glm profile use`.
 			clearedDefault := clearLegacyDefault(f, existed)
-			// add is otherwise non-transactional: capture any prior credential
+			// add is otherwise non-transactional: capture any prior secret
 			// so a failed config save can roll the keyring back instead of
-			// leaving the old instance/username paired with a new password.
+			// leaving the old instance/identity paired with a new secret.
 			// GetStored reads the keyring only — Get would return a
 			// GLM_PASSWORD override and corrupt the rollback.
-			oldPw, hadOld := secret.GetStored(name)
-			if err := secret.Set(name, password); err != nil {
-				return err
+			undo := func() {}
+			switch {
+			case password != "":
+				oldPw, hadOld := secret.GetStored(name)
+				if err := secret.Set(name, password); err != nil {
+					return err
+				}
+				undo = func() {
+					if hadOld {
+						_ = secret.Set(name, oldPw)
+					} else {
+						_ = secret.Delete(name)
+					}
+				}
+			case clientSecret != "":
+				oldCS, hadCS := loadClientSecret(name)
+				if err := saveClientSecret(name, clientSecret); err != nil {
+					return err
+				}
+				undo = func() {
+					if hadCS {
+						_ = saveClientSecret(name, oldCS)
+					} else {
+						_ = deleteClientSecret(name)
+					}
+				}
 			}
 			if err := f.Save(); err != nil {
-				if hadOld {
-					_ = secret.Set(name, oldPw)
-				} else {
-					_ = secret.Delete(name)
-				}
+				undo()
 				return err
+			}
+
+			// Invalidate keyring state the update obsoletes. A cached token
+			// minted under rotated/removed material would keep
+			// authenticating until expiry — masking a bad new secret — so
+			// the stored token goes whenever auth material changed. An
+			// unchanged oauth profile (say, a port tweak) keeps its session.
+			var stale []error
+			if hadStaleSecret {
+				if err := deleteClientSecret(name); err != nil {
+					stale = append(stale, err)
+				}
+			}
+			if materialChanged {
+				if err := deleteStoredToken(name); err != nil {
+					stale = append(stale, err)
+				}
+			}
+			if existed && oldMethod == config.AuthBasic && method != config.AuthBasic {
+				// Leaving basic auth: the old password must not linger under
+				// the bare profile name until `profile remove`.
+				if err := deletePassword(name); err != nil {
+					stale = append(stale, err)
+				}
+			}
+			if len(stale) > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: stale auth material could not be removed from the keyring: %v\n", errors.Join(stale...))
 			}
 
 			verb := "added"
@@ -139,23 +247,36 @@ func newProfileAddCmd() *cobra.Command {
 				// shows the write gate is (still) open.
 				access = ", rw"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "profile %q %s (%s as %s%s)\n", name, verb, base.String(), username, access)
+			who := fmt.Sprintf("as %s", username)
+			if username == "" {
+				who = "via " + method
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "profile %q %s (%s %s%s)\n", name, verb, base.String(), who, access)
 			switch {
 			case clearedDefault != "":
 				fmt.Fprintf(cmd.ErrOrStderr(), "cleared implicit default %q — commands now require -p <name> (restore: glm profile use %s)\n", clearedDefault, clearedDefault)
 			case len(f.Profiles) >= 2 && f.Default == "":
 				fmt.Fprintf(cmd.ErrOrStderr(), "%d profiles configured — commands now require -p <name> (or set a default: glm profile use <name>)\n", len(f.Profiles))
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "try: glm profile test %s\n", name)
+			if method != config.AuthBasic {
+				// login also resolves and records the acting identity (O10)
+				// — without it, previews and audits show it as unresolved.
+				fmt.Fprintf(cmd.ErrOrStderr(), "next: glm profile login %s\n", name)
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(), "try: glm profile test %s\n", name)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&instance, "instance", "", "instance name or URL, e.g. acme or https://acme.service-now.com (required)")
-	cmd.Flags().StringVar(&username, "username", "", "instance username (required)")
+	cmd.Flags().StringVar(&username, "username", "", "instance username (required for basic auth)")
+	cmd.Flags().StringVar(&auth, "auth", "basic", "auth method: basic, oauth (interactive PKCE), client-credentials")
+	cmd.Flags().StringVar(&clientID, "client-id", "", "OAuth client_id from the instance's Application Registry")
 	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "read the password from stdin instead of prompting")
+	cmd.Flags().BoolVar(&clientSecretStdin, "client-secret-stdin", false, "read the OAuth client secret from stdin instead of prompting")
+	cmd.Flags().IntVar(&redirectPort, "redirect-port", 0, "override the OAuth callback port (default 8456; must match the registry entry)")
 	cmd.Flags().BoolVar(&writable, "writable", false, "allow writes on this profile (default read-only)")
 	_ = cmd.MarkFlagRequired("instance")
-	_ = cmd.MarkFlagRequired("username")
 	return cmd
 }
 
@@ -189,34 +310,36 @@ func clearLegacyDefault(f *config.File, existed bool) string {
 	return old
 }
 
-func readPassword(cmd *cobra.Command, fromStdin bool) (string, error) {
+// readSecret reads one secret value (a password, a client secret) from
+// stdin or an interactive no-echo prompt.
+func readSecret(cmd *cobra.Command, fromStdin bool, label string) (string, error) {
 	if fromStdin {
 		data, err := io.ReadAll(cmd.InOrStdin())
 		if err != nil {
-			return "", fmt.Errorf("read password from stdin: %w", err)
+			return "", fmt.Errorf("read %s from stdin: %w", label, err)
 		}
 		// Strip the UTF-8 BOM a PowerShell pipe prepends before trimming the
 		// line ending — otherwise the stored password carries U+FEFF and
 		// fails auth immediately (matches the batch-key and api-body paths).
 		pw := strings.TrimRight(strings.TrimPrefix(string(data), "\ufeff"), "\r\n")
 		if pw == "" {
-			return "", fmt.Errorf("empty password on stdin")
+			return "", fmt.Errorf("empty %s on stdin", label)
 		}
 		return pw, nil
 	}
 
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return "", fmt.Errorf("stdin is not a terminal — use --password-stdin")
+		return "", fmt.Errorf("stdin is not a terminal — pipe the %s in via the matching --*-stdin flag", label)
 	}
-	fmt.Fprint(cmd.ErrOrStderr(), "password: ")
+	fmt.Fprintf(cmd.ErrOrStderr(), "%s: ", label)
 	pw, err := term.ReadPassword(fd)
 	fmt.Fprintln(cmd.ErrOrStderr())
 	if err != nil {
-		return "", fmt.Errorf("read password: %w", err)
+		return "", fmt.Errorf("read %s: %w", label, err)
 	}
 	if len(pw) == 0 {
-		return "", fmt.Errorf("empty password")
+		return "", fmt.Errorf("empty %s", label)
 	}
 	return string(pw), nil
 }
@@ -346,6 +469,135 @@ func newProfileTestCmd() *cobra.Command {
 	}
 }
 
+// newProfileLoginCmd is the ONE interactive auth command (DESIGN-OAUTH.md
+// O3): PKCE through the browser for oauth profiles, a token mint for
+// client-credentials. Data commands never launch a browser — an expired
+// session always errors naming this command (Resolution 5).
+func newProfileLoginCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "login [name]",
+		Short: "Sign in to an OAuth profile (opens your browser; PKCE)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+			res, err := resolveProfile(cmd, name)
+			if err != nil {
+				return err
+			}
+			if res.Name == config.EnvProfileName {
+				return fmt.Errorf("the env profile is stateless — supply GLM_TOKEN (or GLM_CLIENT_ID/GLM_CLIENT_SECRET) instead of logging in")
+			}
+			timeout, _ := cmd.Flags().GetDuration("timeout")
+
+			var tok *oauth.Token
+			switch res.Profile.Auth {
+			case config.AuthOAuth:
+				cfg, err := oauthConfigFor(res)
+				if err != nil {
+					return err
+				}
+				if cfg.ClientID == "" {
+					return fmt.Errorf("profile %q has no client_id — re-add it: glm profile add %s --instance %s --auth oauth --client-id <id>", res.Name, res.Name, res.Profile.Instance)
+				}
+				cfg.Notify = func(msg string) { fmt.Fprintln(cmd.ErrOrStderr(), msg) }
+				tok, err = runOAuthLogin(cmd.Context(), cfg)
+				if err != nil {
+					return err
+				}
+			case config.AuthClientCredentials:
+				cfg, err := oauthConfigFor(res)
+				if err != nil {
+					return err
+				}
+				tok, err = oauth.ClientCredentials(cmd.Context(), cfg)
+				if err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("profile %q uses basic auth — there is no login step (verify with: glm profile test %s)", res.Name, res.Name)
+			}
+
+			if err := saveStoredToken(res.Name, tok); err != nil {
+				return fmt.Errorf("signed in, but storing the token failed: %w", err)
+			}
+
+			// O10: resolve who the token actually is and store it on the
+			// profile — it feeds the W7 identity line and the per-user
+			// schema cache key. Identity failure does not undo the login.
+			host := strings.TrimPrefix(res.Profile.Instance, "https://")
+			userName, display, ierr := tokenIdentity(cmd.Context(), res, tok.AccessToken, timeout)
+			if ierr != nil || userName == "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "signed in @ %s (profile %s) — identity not visible\n", host, res.Name)
+				return nil
+			}
+			if userName != res.Profile.Username {
+				if f, err := config.Load(); err == nil {
+					if p, ok := f.Profiles[res.Name]; ok {
+						p.Username = userName
+						f.Profiles[res.Name] = p
+						_ = f.Save()
+					}
+				}
+			}
+			id := userName
+			if display != "" && display != userName {
+				id = fmt.Sprintf("%s (%s)", userName, display)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "signed in as %s @ %s (profile %s)\n", id, host, res.Name)
+			return nil
+		},
+	}
+}
+
+// tokenIdentity asks the instance who an access token belongs to
+// (DESIGN-OAUTH.md O10).
+func tokenIdentity(ctx context.Context, res *config.Resolved, accessToken string, timeout time.Duration) (string, string, error) {
+	client, err := snow.NewBearer(res.Profile.Instance, accessToken, "login", timeout)
+	if err != nil {
+		return "", "", err
+	}
+	q := url.Values{}
+	q.Set("sysparm_query", "sys_id=javascript:gs.getUserID()")
+	q.Set("sysparm_fields", "user_name,name")
+	q.Set("sysparm_limit", "1")
+	q.Set("sysparm_display_value", "true")
+	q.Set("sysparm_exclude_reference_link", "true")
+	rows, err := client.Table(ctx, "sys_user", q)
+	if err != nil || len(rows) == 0 {
+		return "", "", err
+	}
+	return field(rows[0], "user_name"), field(rows[0], "name"), nil
+}
+
+func newProfileLogoutCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "logout [name]",
+		Short: "Discard a profile's stored OAuth tokens",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+			res, err := resolveProfile(cmd, name)
+			if err != nil {
+				return err
+			}
+			if res.Name == config.EnvProfileName {
+				return fmt.Errorf("the env profile stores no tokens — unset GLM_TOKEN/GLM_CLIENT_SECRET instead")
+			}
+			if err := deleteStoredToken(res.Name); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "profile %q signed out (stored tokens removed; the client secret, if any, is kept — `glm profile remove` deletes everything)\n", res.Name)
+			return nil
+		},
+	}
+}
+
 func newProfileRemoveCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "remove <name>",
@@ -370,8 +622,23 @@ func newProfileRemoveCmd() *cobra.Command {
 			if err := f.Save(); err != nil {
 				return err
 			}
-			if err := secret.Delete(name); err != nil {
-				return fmt.Errorf("profile removed from config, but deleting its keyring credential failed: %w", err)
+			// Every keyring entry goes with the profile: password, OAuth
+			// tokens, client secret. The delete helpers already treat a
+			// missing entry as success, so any error here is a REAL keyring
+			// failure — and printing success while credentials linger would
+			// break remove's promise, so it is reported, not swallowed.
+			var kerrs []error
+			if err := deleteStoredToken(name); err != nil {
+				kerrs = append(kerrs, err)
+			}
+			if err := deleteClientSecret(name); err != nil {
+				kerrs = append(kerrs, err)
+			}
+			if err := deletePassword(name); err != nil {
+				kerrs = append(kerrs, err)
+			}
+			if len(kerrs) > 0 {
+				return fmt.Errorf("profile removed from config, but deleting its keyring material failed: %w", errors.Join(kerrs...))
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "profile %q removed\n", name)
 			return nil

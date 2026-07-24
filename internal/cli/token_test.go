@@ -205,16 +205,17 @@ func TestIdentityLineAndAuditUserUnderToken(t *testing.T) {
 }
 
 func TestGlmTokenBypassesAuthMethodValidation(t *testing.T) {
-	// Codex P2 (PR #23): a staged profile with a not-yet-shipped auth method
-	// (oauth, client_credentials) must still be usable under GLM_TOKEN — the
-	// token displaces the profile's method, and the method check only exists
-	// to fail fast when glm cannot build a credential. Without a token the
-	// rejection stands.
+	// Codex P2 (PR #23): a profile with an unshipped/unknown auth method
+	// must still be usable under GLM_TOKEN — the token displaces the
+	// profile's method, and the method check only exists to fail fast when
+	// glm cannot build a credential. Without a token the rejection stands.
+	// (oauth/client_credentials are supported methods now, so the pinned
+	// case is a future method glm has never heard of.)
 	var auths []string
 	srv := countServer(t, &auths)
 	pointConfigAt(t)
 	writeConfig(t, &config.File{Profiles: map[string]config.Profile{
-		"o": {Instance: srv.URL, Auth: "oauth", Username: "u"},
+		"o": {Instance: srv.URL, Auth: "kerberos", Username: "u"},
 	}})
 
 	_, _, err := execRoot(t, "-p", "o", "count", "x")
