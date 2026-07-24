@@ -274,6 +274,69 @@ func TestDiffRecordNumberKeyTableMissingOneSide(t *testing.T) {
 	}
 }
 
+// TestDiffFieldsValidation: --fields is validated against the union of both
+// schemas (Codex review). A field present on only one instance is legitimate
+// (drift is what diff surfaces); a name unknown on both is a typo that would
+// otherwise be silently reported as identical.
+func TestDiffFieldsValidation(t *testing.T) {
+	dictA := []map[string]any{
+		{"name": "widget", "element": "sys_id", "internal_type": "GUID"},
+		{"name": "widget", "element": "name", "internal_type": "string", "display": "true"},
+		{"name": "widget", "element": "severity", "internal_type": "integer"},
+	}
+	dictB := []map[string]any{
+		{"name": "widget", "element": "sys_id", "internal_type": "GUID"},
+		{"name": "widget", "element": "name", "internal_type": "string", "display": "true"},
+	}
+	recA := map[string]any{"sys_id": sysIDa, "severity": "high"}
+	recB := map[string]any{"sys_id": sysIDa}
+	srvA := diffServer(t, "widget", diffFake{dict: dictA, record: recA})
+	srvB := diffServer(t, "widget", diffFake{dict: dictB, record: recB})
+	twoProfiles(t, srvA, srvB)
+
+	// Drift: severity exists on A only — a valid comparison, not a rejection.
+	stdout, _ := runGlm(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b", "--fields", "severity")
+	if !strings.Contains(stdout, "severity") || !strings.Contains(stdout, "high") {
+		t.Errorf("a field present on one side must be comparable, got: %q", stdout)
+	}
+
+	// Typo: unknown on both → hard error, not a false "identical".
+	_, _, err := runGlmErr(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b", "--fields", "severty")
+	if err == nil || !strings.Contains(err.Error(), "severty") {
+		t.Fatalf("a field unknown on both instances must be rejected, got: %v", err)
+	}
+}
+
+// TestDiffSchemaReferenceTypeMismatch: a reference vs a glide_list to the same
+// target is a real type difference and must be reported (Codex review) — the
+// descriptor keeps the internal type, not just the target.
+func TestDiffSchemaReferenceTypeMismatch(t *testing.T) {
+	dictA := []map[string]any{
+		{"name": "widget", "element": "sys_id", "internal_type": "GUID"},
+		{"name": "widget", "element": "name", "internal_type": "string", "display": "true"},
+		{"name": "widget", "element": "watchers", "internal_type": "reference", "reference.name": "sys_user"},
+	}
+	dictB := []map[string]any{
+		{"name": "widget", "element": "sys_id", "internal_type": "GUID"},
+		{"name": "widget", "element": "name", "internal_type": "string", "display": "true"},
+		{"name": "widget", "element": "watchers", "internal_type": "glide_list", "reference.name": "sys_user"},
+	}
+	srvA := diffServer(t, "widget", diffFake{dict: dictA})
+	srvB := diffServer(t, "widget", diffFake{dict: dictB})
+	twoProfiles(t, srvA, srvB)
+
+	stdout, stderr := runGlm(t, srvA, "", "diff", "widget", "-p", "a", "-p", "b")
+	if !strings.Contains(stdout, "watchers") {
+		t.Errorf("the differing field must be listed: %q", stdout)
+	}
+	if !strings.Contains(stdout, "reference→sys_user") || !strings.Contains(stdout, "glide_list→sys_user") {
+		t.Errorf("both internal types must show (same target, different type): %q", stdout)
+	}
+	if !strings.Contains(stderr, "1 schema difference(s)") {
+		t.Errorf("the type mismatch must be counted: %q", stderr)
+	}
+}
+
 func widgetDict(stateType, only, ownerRef string) []map[string]any {
 	return []map[string]any{
 		{"name": "widget", "element": "sys_id", "internal_type": "GUID"},

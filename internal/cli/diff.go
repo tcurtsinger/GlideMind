@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -87,6 +88,17 @@ func newDiffCmd() *cobra.Command {
 // stored values differ. The key is resolved independently on each side.
 func diffRecord(cmd *cobra.Command, clientA, clientB *snow.Client, nameA, nameB, table, key string, fields []string, opts output.Options) error {
 	ctx := cmd.Context()
+	storeA, storeB := schemaStore(clientA), schemaStore(clientB)
+
+	// Explicit fields are validated against both schemas before comparing: a
+	// name the Table API omits reads as "" on both sides and would otherwise be
+	// silently reported as identical (a typo'd --fields hidden as a match).
+	if len(fields) > 0 {
+		if err := validateDiffFields(ctx, storeA, storeB, table, fields); err != nil {
+			return err
+		}
+	}
+
 	baseQuery := url.Values{}
 	baseQuery.Set("sysparm_display_value", "false") // stored values, like query (I5)
 	baseQuery.Set("sysparm_exclude_reference_link", "true")
@@ -96,8 +108,8 @@ func diffRecord(cmd *cobra.Command, clientA, clientB *snow.Client, nameA, nameB,
 		baseQuery.Set("sysparm_fields", strings.Join(requested, ","))
 	}
 
-	recA, errA := newRecordFetcher(clientA, schemaStore(clientA), table, baseQuery)(ctx, key)
-	recB, errB := newRecordFetcher(clientB, schemaStore(clientB), table, baseQuery)(ctx, key)
+	recA, errA := newRecordFetcher(clientA, storeA, table, baseQuery)(ctx, key)
+	recB, errB := newRecordFetcher(clientB, storeB, table, baseQuery)(ctx, key)
 
 	missA, ferr := classifyRecordErr(nameA, errA)
 	if ferr != nil {
@@ -251,15 +263,59 @@ func oneSidedMsg(missA, missB bool, nameA, nameB, subject string) string {
 	return ""
 }
 
+// validateDiffFields rejects a --fields name only when it is provably unknown
+// on BOTH instances. A field present on either side is legitimate — schema
+// drift between instances is exactly what diff exists to surface — so the
+// check is against the union; a name unknown everywhere (a typo) would
+// otherwise read as "" on both sides and be silently reported as identical.
+// TableMeta.Validate stays lenient (an ACL-filtered/partial dictionary can't
+// prove a field wrong). A table absent on one instance contributes no schema;
+// if neither has it, the diff itself reports the miss, so validation is
+// skipped.
+func validateDiffFields(ctx context.Context, storeA, storeB *schema.Store, table string, fields []string) error {
+	var metas []*schema.TableMeta
+	for _, s := range []*schema.Store{storeA, storeB} {
+		m, err := s.Get(ctx, table)
+		if err != nil {
+			var nf *schema.NotFoundError
+			if errors.As(err, &nf) {
+				continue // table absent here; the other side (or the diff) handles it
+			}
+			return err
+		}
+		metas = append(metas, m)
+	}
+	if len(metas) == 0 {
+		return nil
+	}
+	for _, f := range fields {
+		known := false
+		var reject error
+		for _, m := range metas {
+			if err := m.Validate([]string{f}); err == nil {
+				known = true
+				break
+			} else {
+				reject = err
+			}
+		}
+		if !known {
+			return reject
+		}
+	}
+	return nil
+}
+
 // fieldDesc renders a field's schema shape for comparison: "—" when absent,
-// "reference→<table>" for a reference, else the raw type.
+// "<type>→<target>" for a reference (the type is kept, so a reference vs a
+// glide_list to the same target still reads as a mismatch), else the raw type.
 func fieldDesc(meta *schema.TableMeta, name string) string {
 	f, ok := meta.Fields[name]
 	if !ok {
 		return "—"
 	}
 	if f.Reference != "" {
-		return "reference→" + f.Reference
+		return f.Type + "→" + f.Reference
 	}
 	return f.Type
 }
