@@ -368,6 +368,65 @@ func TestDiffFieldsValidation(t *testing.T) {
 	}
 }
 
+// TestDiffExplicitFieldsWithoutSchemaAccess: a least-privilege profile that
+// can read records but not the dictionary tables must still be able to run an
+// explicit sys_id + --fields record diff (Codex, post-merge #22) —
+// unavailable metadata cannot prove a field wrong, so validation steps aside
+// instead of aborting before the Table API read.
+func TestDiffExplicitFieldsWithoutSchemaAccess(t *testing.T) {
+	noSchemaServer := func(record map[string]any) *httptest.Server {
+		mux := http.NewServeMux()
+		deny := func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, `{"error":{"message":"Insufficient rights"}}`, http.StatusForbidden)
+		}
+		mux.HandleFunc("/api/now/table/sys_db_object", deny)
+		mux.HandleFunc("/api/now/table/sys_dictionary", deny)
+		mux.HandleFunc("/api/now/table/widget/", func(w http.ResponseWriter, r *http.Request) {
+			snResult(w, record)
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	srvA := noSchemaServer(map[string]any{"sys_id": sysIDa, "state": "1"})
+	srvB := noSchemaServer(map[string]any{"sys_id": sysIDa, "state": "3"})
+	twoProfiles(t, srvA, srvB)
+
+	stdout, _ := runGlm(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b", "--fields", "state")
+	if !strings.Contains(stdout, "state") || !strings.Contains(stdout, "1") || !strings.Contains(stdout, "3") {
+		t.Errorf("the record diff must run without schema access, got: %q", stdout)
+	}
+}
+
+// TestDiffValidatesSysFieldTypos: diff is a truth claim, so the sys_* bypass
+// the read path keeps does not apply here (Codex, post-merge #22) — a typo'd
+// system field read as "" on both sides would report the records as
+// identical. A legitimate system field on a complete dictionary still passes.
+func TestDiffValidatesSysFieldTypos(t *testing.T) {
+	dict := []map[string]any{
+		{"name": "widget", "element": "sys_id", "internal_type": "GUID"},
+		{"name": "widget", "element": "name", "internal_type": "string", "display": "true"},
+		{"name": "widget", "element": "sys_updated_on", "internal_type": "glide_date_time"},
+	}
+	recA := map[string]any{"sys_id": sysIDa, "sys_updated_on": "2026-07-23 01:00:00"}
+	recB := map[string]any{"sys_id": sysIDa, "sys_updated_on": "2026-07-24 02:00:00"}
+	srvA := diffServer(t, "widget", diffFake{dict: dict, record: recA})
+	srvB := diffServer(t, "widget", diffFake{dict: dict, record: recB})
+	twoProfiles(t, srvA, srvB)
+
+	// The real system field compares normally.
+	stdout, _ := runGlm(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b", "--fields", "sys_updated_on")
+	if !strings.Contains(stdout, "sys_updated_on") {
+		t.Errorf("a legitimate sys_* field must be comparable, got: %q", stdout)
+	}
+
+	// The typo dies against complete dictionaries instead of comparing ""=="".
+	_, _, err := runGlmErr(t, srvA, "", "diff", "widget", sysIDa, "-p", "a", "-p", "b", "--fields", "sys_update_on")
+	if err == nil || !strings.Contains(err.Error(), "sys_update_on") {
+		t.Fatalf("a typo'd sys_* field must be rejected, got: %v", err)
+	}
+}
+
 // TestDiffSchemaReferenceTypeMismatch: a reference vs a glide_list to the same
 // target is a real type difference and must be reported (Codex review) — the
 // descriptor keeps the internal type, not just the target.
